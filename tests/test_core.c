@@ -429,6 +429,47 @@ static int test_vblank_poll_can_suppress_pending_nmi(void)
     return ok;
 }
 
+static int test_oam_dma_cycle_parity(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load oam dma rom", result, NES_RESULT_OK);
+    nes.cpu.cycles = 0;
+    nes_cpu_write(&nes, 0x4014, 0x00);
+    ok &= expect_int("oam dma even cycles", nes.cpu.extra_cycles, 513);
+    nes.cpu.extra_cycles = 0;
+    nes.cpu.cycles = 1;
+    nes_cpu_write(&nes, 0x4014, 0x00);
+    ok &= expect_int("oam dma odd cycles", nes.cpu.extra_cycles, 514);
+    nes.cpu.extra_cycles = 0;
+    nes.cpu.cycles = 2;
+    nes.cpu.io_write_delay = 3;
+    nes_cpu_write(&nes, 0x4014, 0x00);
+    ok &= expect_int("oam dma delayed odd write", nes.cpu.extra_cycles, 514);
+    nes.cpu.extra_cycles = 0;
+    nes.cpu.cycles = 1;
+    nes.cpu.io_write_delay = 3;
+    nes_cpu_write(&nes, 0x4014, 0x00);
+    ok &= expect_int("oam dma delayed even write", nes.cpu.extra_cycles, 513);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_unofficial_opcodes(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -724,6 +765,7 @@ int main(int argc, char **argv)
     ok &= test_mach_rider_controller_routine();
     ok &= test_ppuctrl_nmi_rising_edge();
     ok &= test_vblank_poll_can_suppress_pending_nmi();
+    ok &= test_oam_dma_cycle_parity();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();

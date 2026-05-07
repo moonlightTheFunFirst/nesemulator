@@ -275,6 +275,36 @@ static void ppu_write_register(NesEmu *nes, uint16_t address, uint8_t value)
     }
 }
 
+static void ppu_apply_pending_write(NesEmu *nes)
+{
+    if (!nes->ppu.pending_write) {
+        return;
+    }
+    nes->ppu.pending_write = 0;
+    ppu_write_register(nes, nes->ppu.pending_write_address, nes->ppu.pending_write_value);
+}
+
+static void ppu_schedule_register_write(NesEmu *nes, uint16_t address, uint8_t value, int cpu_cycles)
+{
+    int position;
+
+    if (cpu_cycles <= 0) {
+        ppu_write_register(nes, address, value);
+        return;
+    }
+    if (nes->ppu.pending_write) {
+        ppu_apply_pending_write(nes);
+    }
+    position = nes->ppu.scanline * PPU_CYCLES_PER_SCANLINE + nes->ppu.cycle + cpu_cycles * 3;
+    while (position >= PPU_CYCLES_PER_FRAME) {
+        position -= PPU_CYCLES_PER_FRAME;
+    }
+    nes->ppu.pending_write_address = address;
+    nes->ppu.pending_write_value = value;
+    nes->ppu.pending_write_position = position;
+    nes->ppu.pending_write = 1;
+}
+
 static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     if (address >= 0x4000u && address <= 0x4017u) {
@@ -446,7 +476,7 @@ static void cpu_write_bus(NesEmu *nes, uint16_t address, uint8_t value)
         return;
     }
     if (address < 0x4000u) {
-        ppu_write_register(nes, address, value);
+        ppu_schedule_register_write(nes, address, value, nes->cpu.io_write_delay);
         return;
     }
     if (address >= 0x4000u && address <= 0x4013u) {
@@ -460,7 +490,7 @@ static void cpu_write_bus(NesEmu *nes, uint16_t address, uint8_t value)
         for (i = 0; i < 256; ++i) {
             nes->ppu.oam[nes->ppu.oam_addr++] = cpu_read_bus(nes, (uint16_t)(source + i));
         }
-        nes->cpu.extra_cycles += 513;
+        nes->cpu.extra_cycles += 513 + (int)((nes->cpu.cycles + (uint64_t)nes->cpu.io_write_delay) & 1u);
         return;
     }
     if (address == 0x4015u || address == 0x4017u) {
@@ -474,6 +504,15 @@ static void cpu_write_bus(NesEmu *nes, uint16_t address, uint8_t value)
     if (address >= 0x6000u && address <= 0x7FFFu) {
         nes->mapper.prg_ram[address - 0x6000u] = value;
     }
+}
+
+static void cpu_write_bus_delayed(NesEmu *nes, uint16_t address, uint8_t value, int cpu_cycles)
+{
+    int old_delay = nes->cpu.io_write_delay;
+
+    nes->cpu.io_write_delay = cpu_cycles;
+    cpu_write_bus(nes, address, value);
+    nes->cpu.io_write_delay = old_delay;
 }
 
 uint8_t nes_cpu_read(NesEmu *nes, uint16_t address)
@@ -744,6 +783,7 @@ static int cpu_step(NesEmu *nes)
     int page_crossed = 0;
     int cycles = 0;
 
+    nes->cpu.io_write_delay = 0;
     if (nes->cpu.stopped) {
         return 1;
     }
@@ -1269,11 +1309,11 @@ static int cpu_step(NesEmu *nes)
         cycles = 7;
         break;
     case 0x81:
-        cpu_write_bus(nes, addr_indx(nes), nes->cpu.a);
+        cpu_write_bus_delayed(nes, addr_indx(nes), nes->cpu.a, 5);
         cycles = 6;
         break;
     case 0x83:
-        op_sax(nes, addr_indx(nes));
+        cpu_write_bus_delayed(nes, addr_indx(nes), (uint8_t)(nes->cpu.a & nes->cpu.x), 5);
         cycles = 6;
         break;
     case 0x84:
@@ -1308,31 +1348,34 @@ static int cpu_step(NesEmu *nes)
         cycles = 2;
         break;
     case 0x8C:
-        cpu_write_bus(nes, addr_abs(nes), nes->cpu.y);
+        cpu_write_bus_delayed(nes, addr_abs(nes), nes->cpu.y, 3);
         cycles = 4;
         break;
     case 0x8D:
-        cpu_write_bus(nes, addr_abs(nes), nes->cpu.a);
+        cpu_write_bus_delayed(nes, addr_abs(nes), nes->cpu.a, 3);
         cycles = 4;
         break;
     case 0x8E:
-        cpu_write_bus(nes, addr_abs(nes), nes->cpu.x);
+        cpu_write_bus_delayed(nes, addr_abs(nes), nes->cpu.x, 3);
         cycles = 4;
         break;
     case 0x8F:
-        op_sax(nes, addr_abs(nes));
+        cpu_write_bus_delayed(nes, addr_abs(nes), (uint8_t)(nes->cpu.a & nes->cpu.x), 3);
         cycles = 4;
         break;
     case 0x90:
         cycles = 2 + op_branch(nes, !cpu_get_flag(nes, CPU_C));
         break;
     case 0x91:
-        cpu_write_bus(nes, addr_indy(nes, NULL), nes->cpu.a);
+        cpu_write_bus_delayed(nes, addr_indy(nes, NULL), nes->cpu.a, 5);
         cycles = 6;
         break;
     case 0x93:
         address = addr_indy(nes, NULL);
-        cpu_write_bus(nes, address, (uint8_t)(nes->cpu.a & nes->cpu.x & (((address >> 8) + 1u) & 0xFFu)));
+        cpu_write_bus_delayed(nes,
+                              address,
+                              (uint8_t)(nes->cpu.a & nes->cpu.x & (((address >> 8) + 1u) & 0xFFu)),
+                              5);
         cycles = 6;
         break;
     case 0x94:
@@ -1357,7 +1400,7 @@ static int cpu_step(NesEmu *nes)
         cycles = 2;
         break;
     case 0x99:
-        cpu_write_bus(nes, addr_absy(nes, NULL), nes->cpu.a);
+        cpu_write_bus_delayed(nes, addr_absy(nes, NULL), nes->cpu.a, 4);
         cycles = 5;
         break;
     case 0x9A:
@@ -1365,28 +1408,40 @@ static int cpu_step(NesEmu *nes)
         cycles = 2;
         break;
     case 0x9D:
-        cpu_write_bus(nes, addr_absx(nes, NULL), nes->cpu.a);
+        cpu_write_bus_delayed(nes, addr_absx(nes, NULL), nes->cpu.a, 4);
         cycles = 5;
         break;
     case 0x9B:
         address = addr_absy(nes, NULL);
         nes->cpu.sp = (uint8_t)(nes->cpu.a & nes->cpu.x);
-        cpu_write_bus(nes, address, (uint8_t)(nes->cpu.sp & (((address >> 8) + 1u) & 0xFFu)));
+        cpu_write_bus_delayed(nes,
+                              address,
+                              (uint8_t)(nes->cpu.sp & (((address >> 8) + 1u) & 0xFFu)),
+                              4);
         cycles = 5;
         break;
     case 0x9C:
         address = addr_absx(nes, NULL);
-        cpu_write_bus(nes, address, (uint8_t)(nes->cpu.y & (((address >> 8) + 1u) & 0xFFu)));
+        cpu_write_bus_delayed(nes,
+                              address,
+                              (uint8_t)(nes->cpu.y & (((address >> 8) + 1u) & 0xFFu)),
+                              4);
         cycles = 5;
         break;
     case 0x9E:
         address = addr_absy(nes, NULL);
-        cpu_write_bus(nes, address, (uint8_t)(nes->cpu.x & (((address >> 8) + 1u) & 0xFFu)));
+        cpu_write_bus_delayed(nes,
+                              address,
+                              (uint8_t)(nes->cpu.x & (((address >> 8) + 1u) & 0xFFu)),
+                              4);
         cycles = 5;
         break;
     case 0x9F:
         address = addr_absy(nes, NULL);
-        cpu_write_bus(nes, address, (uint8_t)(nes->cpu.a & nes->cpu.x & (((address >> 8) + 1u) & 0xFFu)));
+        cpu_write_bus_delayed(nes,
+                              address,
+                              (uint8_t)(nes->cpu.a & nes->cpu.x & (((address >> 8) + 1u) & 0xFFu)),
+                              4);
         cycles = 5;
         break;
     case 0xA0:
@@ -1897,6 +1952,19 @@ static void render_background_scanline(NesEmu *nes, int y, uint8_t *bg_opaque)
     }
 }
 
+static void ppu_schedule_sprite0_hit(NesEmu *nes, int y, int x)
+{
+    int position;
+
+    if ((nes->ppu.status & 0x40u) != 0 || x < 0 || x >= 255) {
+        return;
+    }
+    position = y * PPU_CYCLES_PER_SCANLINE + x + 1;
+    if (nes->ppu.sprite0_hit_position < 0 || position < nes->ppu.sprite0_hit_position) {
+        nes->ppu.sprite0_hit_position = position;
+    }
+}
+
 static void render_scanline(NesEmu *nes, int y)
 {
     uint8_t bg_opaque[NESEMU_SCREEN_WIDTH];
@@ -1917,6 +1985,8 @@ static void render_scanline(NesEmu *nes, int y)
             uint8_t lo;
             uint8_t hi;
             int col;
+            int sprite0_hit_x = -1;
+            int sprite0_fallback_x = -1;
 
             if (y < sprite_y || y >= sprite_y + height) {
                 continue;
@@ -1954,14 +2024,22 @@ static void render_scanline(NesEmu *nes, int y)
                     continue;
                 }
                 slot = (uint8_t)(0x10u + (attr & 0x03u) * 4u + color);
-                if (sprite == 0 && screen_x < 255 &&
-                    (bg_opaque[screen_x] || (nes->ppu.mask & 0x08u) != 0)) {
-                    nes->ppu.status |= 0x40u;
+                if (sprite == 0 && screen_x < 255) {
+                    if (bg_opaque[screen_x] && sprite0_hit_x < 0) {
+                        sprite0_hit_x = screen_x;
+                    } else if ((nes->ppu.mask & 0x08u) != 0 && sprite0_fallback_x < 0) {
+                        sprite0_fallback_x = screen_x;
+                    }
                 }
                 if ((attr & 0x20u) == 0 || !bg_opaque[screen_x]) {
                     nes->ppu.framebuffer[y * NESEMU_SCREEN_WIDTH + screen_x] =
                         nes_palette_rgb[palette_read(&nes->ppu, (uint16_t)(0x3F00u + slot)) & 0x3Fu];
                 }
+            }
+            if (sprite == 0) {
+                ppu_schedule_sprite0_hit(nes,
+                                         y,
+                                         sprite0_hit_x >= 0 ? sprite0_hit_x : sprite0_fallback_x);
             }
         }
     }
@@ -1982,7 +2060,7 @@ static void ppu_set_position(NesPpu *ppu, int position)
     ppu->cycle = position % PPU_CYCLES_PER_SCANLINE;
 }
 
-static int ppu_next_event_after(int position)
+static int ppu_next_event_after(const NesPpu *ppu, int position)
 {
     int next = PPU_CYCLES_PER_FRAME;
     int next_scanline = position / PPU_CYCLES_PER_SCANLINE + 1;
@@ -1996,15 +2074,32 @@ static int ppu_next_event_after(int position)
     if (position < PPU_PRERENDER_EVENT && PPU_PRERENDER_EVENT < next) {
         next = PPU_PRERENDER_EVENT;
     }
+    if ((ppu->status & 0x40u) == 0 && ppu->sprite0_hit_position > position &&
+        ppu->sprite0_hit_position < next) {
+        next = ppu->sprite0_hit_position;
+    }
+    if (ppu->pending_write && ppu->pending_write_position > position &&
+        ppu->pending_write_position < next) {
+        next = ppu->pending_write_position;
+    }
     return next;
 }
 
 static void ppu_process_current_cycle(NesEmu *nes)
 {
+    int position = ppu_position(&nes->ppu);
+
+    if (nes->ppu.pending_write && nes->ppu.pending_write_position == position) {
+        ppu_apply_pending_write(nes);
+    }
+    if ((nes->ppu.status & 0x40u) == 0 && nes->ppu.sprite0_hit_position == position) {
+        nes->ppu.status |= 0x40u;
+        nes->ppu.sprite0_hit_position = -1;
+    }
     if (nes->ppu.cycle == 0 && nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
         render_scanline(nes, nes->ppu.scanline);
         if (nes->ppu.scanline == 239 && (nes->ppu.mask & 0x18u) == 0x18u) {
-            nes->ppu.status |= 0x40u;
+            ppu_schedule_sprite0_hit(nes, nes->ppu.scanline, 254);
         }
     }
     if (nes->ppu.scanline == 241 && nes->ppu.cycle == 1) {
@@ -2017,6 +2112,8 @@ static void ppu_process_current_cycle(NesEmu *nes)
     }
     if (nes->ppu.scanline == 261 && nes->ppu.cycle == 1) {
         nes->ppu.status &= (uint8_t)~0xC0u;
+        nes->ppu.sprite0_hit_position = -1;
+        nes->ppu.pending_write = 0;
     }
 }
 
@@ -2024,10 +2121,11 @@ static void ppu_step(NesEmu *nes, int ppu_cycles)
 {
     while (ppu_cycles > 0) {
         int position = ppu_position(&nes->ppu);
-        int next_event = ppu_next_event_after(position);
+        int next_event;
         int step;
 
         ppu_process_current_cycle(nes);
+        next_event = ppu_next_event_after(&nes->ppu, position);
         step = next_event - position;
         if (step <= 0) {
             step = PPU_CYCLES_PER_FRAME - position;
@@ -2365,6 +2463,8 @@ void nes_init(NesEmu *nes)
         return;
     }
     memset(nes, 0, sizeof(*nes));
+    nes->ppu.sprite0_hit_position = -1;
+    nes->ppu.pending_write_position = -1;
     nes->apu.noise_lfsr = 1;
 }
 
@@ -2394,6 +2494,8 @@ void nes_reset(NesEmu *nes)
     nes->cpu.sp = 0xFDu;
     nes->ppu.scanline = 0;
     nes->ppu.cycle = 0;
+    nes->ppu.sprite0_hit_position = -1;
+    nes->ppu.pending_write_position = -1;
     if (nes->rom_loaded) {
         nes->reset_vector = (uint16_t)cpu_read_bus(nes, 0xFFFCu);
         nes->reset_vector |= (uint16_t)cpu_read_bus(nes, 0xFFFDu) << 8;

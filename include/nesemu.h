@@ -72,6 +72,7 @@ typedef struct NesCpu {
     int nmi_pending;
     int nmi_delay;
     int extra_cycles;
+    int io_write_delay;
     int stopped;
 } NesCpu;
 
@@ -92,6 +93,11 @@ typedef struct NesPpu {
     uint8_t scroll_y;
     int scanline;
     int cycle;
+    int sprite0_hit_position;
+    int pending_write_position;
+    uint16_t pending_write_address;
+    uint8_t pending_write_value;
+    uint8_t pending_write;
     uint64_t frame;
     uint8_t frame_ready;
     uint32_t framebuffer[NESEMU_SCREEN_WIDTH * NESEMU_SCREEN_HEIGHT];
