@@ -191,6 +191,7 @@ static uint8_t ppu_read_register(NesEmu *nes, uint16_t address)
         ppu->status &= (uint8_t)~0x80u;
         ppu->write_latch = 0;
         nes->cpu.nmi_pending = 0;
+        nes->cpu.nmi_delay = 0;
         return value;
     case 4:
         return ppu->oam[ppu->oam_addr];
@@ -223,6 +224,7 @@ static void ppu_write_register(NesEmu *nes, uint16_t address, uint8_t value)
             ppu->t = (uint16_t)((ppu->t & 0xF3FFu) | ((uint16_t)(value & 0x03u) << 10));
             if ((old_ctrl & 0x80u) == 0 && (value & 0x80u) != 0 && (ppu->status & 0x80u) != 0) {
                 nes->cpu.nmi_pending = 1;
+                nes->cpu.nmi_delay = 0;
             }
         }
         break;
@@ -711,6 +713,7 @@ static int op_branch(NesEmu *nes, int condition)
 static void cpu_service_nmi(NesEmu *nes)
 {
     nes->cpu.nmi_pending = 0;
+    nes->cpu.nmi_delay = 0;
     cpu_push(nes, (uint8_t)(nes->cpu.pc >> 8));
     cpu_push(nes, (uint8_t)nes->cpu.pc);
     cpu_push(nes, (uint8_t)((nes->cpu.p & (uint8_t)~CPU_B) | CPU_U));
@@ -728,9 +731,12 @@ static int cpu_step(NesEmu *nes)
     if (nes->cpu.stopped) {
         return 1;
     }
-    if (nes->cpu.nmi_pending) {
+    if (nes->cpu.nmi_pending && nes->cpu.nmi_delay <= 0) {
         cpu_service_nmi(nes);
         return 7;
+    }
+    if (nes->cpu.nmi_delay > 0) {
+        nes->cpu.nmi_delay--;
     }
 
     opcode = cpu_fetch8(nes);
@@ -1990,6 +1996,7 @@ static void ppu_process_current_cycle(NesEmu *nes)
         nes->ppu.frame_ready = 1;
         if ((nes->ppu.ctrl & 0x80u) != 0) {
             nes->cpu.nmi_pending = 1;
+            nes->cpu.nmi_delay = 1;
         }
     }
     if (nes->ppu.scanline == 261 && nes->ppu.cycle == 1) {

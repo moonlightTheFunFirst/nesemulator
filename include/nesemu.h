@@ -69,6 +69,7 @@ typedef struct NesCpu {
     uint16_t pc;
     uint64_t cycles;
     int nmi_pending;
+    int nmi_delay;
     int extra_cycles;
     int stopped;
 } NesCpu;

@@ -372,6 +372,63 @@ static int test_ppuctrl_nmi_rising_edge(void)
     return ok;
 }
 
+static int test_vblank_poll_can_suppress_pending_nmi(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0xA9, 0x80,       /* LDA #$80 */
+        0x8D, 0x00, 0x20, /* STA $2000 */
+        0xAD, 0x02, 0x20, /* wait: LDA $2002 */
+        0x10, 0xFB,       /* BPL wait */
+        0xA9, 0x5A,       /* LDA #$5A */
+        0x85, 0x30,       /* STA $30 */
+        0x4C, 0x0E, 0x80  /* JMP $800E */
+    };
+    uint8_t nmi_handler[] = {
+        0xA2, 0x00,       /* LDX #$00 */
+        0xA0, 0xFF,       /* outer: LDY #$FF */
+        0x88,             /* inner: DEY */
+        0xD0, 0xFD,       /* BNE inner */
+        0xCA,             /* DEX */
+        0xD0, 0xF8,       /* BNE outer */
+        0x40              /* RTI */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    memcpy(&rom[16 + 0x0100], nmi_handler, sizeof(nmi_handler));
+    rom[16 + 0x3FFA] = 0x00;
+    rom[16 + 0x3FFB] = 0x81;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load vblank poll rom", result, NES_RESULT_OK);
+    nes.cpu.pc = 0x8008u;
+    nes.cpu.p = 0x20u;
+    nes.ppu.ctrl = 0x80u;
+    nes.ppu.scanline = 240;
+    nes.ppu.cycle = 338;
+    nes_run_frame(&nes);
+    ok &= expect_int("vblank poll nmi pending", nes.cpu.nmi_pending, 1);
+    nes_run_frame(&nes);
+    ok &= expect_int("vblank poll continues", nes_cpu_read(&nes, 0x0030), 0x5A);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_unofficial_opcodes(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -628,6 +685,7 @@ int main(int argc, char **argv)
     ok &= test_balloon_fight_controller_routine();
     ok &= test_mach_rider_controller_routine();
     ok &= test_ppuctrl_nmi_rising_edge();
+    ok &= test_vblank_poll_can_suppress_pending_nmi();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_dmc_playback_progresses();
