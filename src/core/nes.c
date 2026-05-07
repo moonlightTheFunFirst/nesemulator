@@ -996,7 +996,7 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     } else if (mapper_id == 4u) {
         nes_mapper4_init(&mapper);
     } else if (mapper_id == 19u) {
-        nes_mapper19_init(&mapper);
+        nes_mapper19_init(&mapper, info.mirroring);
     }
 
     nes_mapper_clear(&nes->mapper);

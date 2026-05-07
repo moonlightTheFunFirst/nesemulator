@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-void nes_mapper19_init(NesMapper *mapper);
+void nes_mapper19_init(NesMapper *mapper, NesMirroring mirroring);
 uint8_t nes_mapper19_cpu_read(NesEmu *nes, uint16_t address);
 void nes_mapper19_cpu_write(NesEmu *nes, uint16_t address, uint8_t value);
 uint8_t nes_mapper19_ppu_read(const NesEmu *nes, uint16_t address);

@@ -80,15 +80,26 @@ static uint8_t mapper19_selected_chr_bank(const NesMapper *mapper, uint16_t addr
     return mapper->mapper19_chr_regs[8u + ((address - 0x2000u) / MAPPER19_CHR_BANK_SIZE)];
 }
 
-void nes_mapper19_init(NesMapper *mapper)
+void nes_mapper19_init(NesMapper *mapper, NesMirroring mirroring)
 {
     int i;
 
     if (mapper == NULL) {
         return;
     }
-    for (i = 0; i < 12; ++i) {
+    for (i = 0; i < 8; ++i) {
         mapper->mapper19_chr_regs[i] = (uint8_t)i;
+    }
+    if (mirroring == NES_MIRROR_HORIZONTAL) {
+        mapper->mapper19_chr_regs[8] = 0xFEu;
+        mapper->mapper19_chr_regs[9] = 0xFEu;
+        mapper->mapper19_chr_regs[10] = 0xFFu;
+        mapper->mapper19_chr_regs[11] = 0xFFu;
+    } else {
+        mapper->mapper19_chr_regs[8] = 0xFEu;
+        mapper->mapper19_chr_regs[9] = 0xFFu;
+        mapper->mapper19_chr_regs[10] = 0xFEu;
+        mapper->mapper19_chr_regs[11] = 0xFFu;
     }
     mapper->mapper19_prg_regs[0] = 0;
     mapper->mapper19_prg_regs[1] = 1;

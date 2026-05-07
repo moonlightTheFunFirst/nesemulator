@@ -242,7 +242,7 @@ static int test_mapper19_bank_switch_nt_and_irq(void)
     rom[3] = 0x1A;
     rom[4] = TEST_MAPPER19_PRG_BANKS;
     rom[5] = TEST_MAPPER19_CHR_BANKS;
-    rom[6] = 0x30;
+    rom[6] = 0x31;
     rom[7] = 0x10;
 
     for (bank = 0; bank < prg_8k_banks; ++bank) {
@@ -269,6 +269,12 @@ static int test_mapper19_bank_switch_nt_and_irq(void)
     ok &= expect_int("mapper19 initial A000", nes_cpu_read(&nes, 0xA000), 0x81);
     ok &= expect_int("mapper19 initial C000", nes_cpu_read(&nes, 0xC000), 0x82);
     ok &= expect_int("mapper19 fixed E000", nes_cpu_read(&nes, 0xE000), 0x58);
+    nes.ppu.nametable[0] = 0x12u;
+    nes.ppu.nametable[0x400] = 0x34u;
+    ok &= expect_int("mapper19 vertical nt initial A", nes_ppu_read(&nes, 0x2000), 0x12);
+    ok &= expect_int("mapper19 vertical nt initial B", nes_ppu_read(&nes, 0x2400), 0x34);
+    ok &= expect_int("mapper19 vertical nt mirror A", nes_ppu_read(&nes, 0x2800), 0x12);
+    ok &= expect_int("mapper19 vertical nt mirror B", nes_ppu_read(&nes, 0x2C00), 0x34);
 
     nes_cpu_write(&nes, 0xE000, 3);
     ok &= expect_int("mapper19 prg 8000 bank", nes_cpu_read(&nes, 0x8000), 0x83);
