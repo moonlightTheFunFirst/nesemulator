@@ -32,6 +32,7 @@ typedef struct AppState {
     HBITMAP old_paint_bitmap;
     int paint_width;
     int paint_height;
+    int reset_key_down;
 } AppState;
 
 static AppState g_app;
@@ -287,6 +288,8 @@ static void load_rom(HWND hwnd, const WCHAR *path)
     g_app.rom_path[(sizeof(g_app.rom_path) / sizeof(g_app.rom_path[0])) - 1u] = L'\0';
     format_loaded_status(path);
     audio_start();
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
@@ -296,8 +299,53 @@ static void handle_drop(HWND hwnd, HDROP drop)
 
     if (DragQueryFileW(drop, 0, path, sizeof(path) / sizeof(path[0])) > 0) {
         load_rom(hwnd, path);
+        SetFocus(hwnd);
     }
     DragFinish(drop);
+}
+
+static int app_key_down(int vk)
+{
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+static void app_sync_keyboard(HWND hwnd)
+{
+    int active = GetForegroundWindow() == hwnd;
+    int reset_pressed;
+
+    if (!active) {
+        nes_set_button(&g_app.nes, NES_BUTTON_UP, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_DOWN, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_LEFT, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_RIGHT, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_A, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_B, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_START, 0);
+        nes_set_button(&g_app.nes, NES_BUTTON_SELECT, 0);
+        g_app.reset_key_down = 0;
+        return;
+    }
+
+    nes_set_button(&g_app.nes, NES_BUTTON_UP, app_key_down('W') || app_key_down(VK_UP));
+    nes_set_button(&g_app.nes, NES_BUTTON_DOWN, app_key_down('S') || app_key_down(VK_DOWN));
+    nes_set_button(&g_app.nes, NES_BUTTON_LEFT, app_key_down('A') || app_key_down(VK_LEFT));
+    nes_set_button(&g_app.nes, NES_BUTTON_RIGHT, app_key_down('D') || app_key_down(VK_RIGHT));
+    nes_set_button(&g_app.nes, NES_BUTTON_A, app_key_down('Z') || app_key_down(VK_SPACE));
+    nes_set_button(&g_app.nes, NES_BUTTON_B, app_key_down('X') || app_key_down(VK_SHIFT));
+    nes_set_button(&g_app.nes, NES_BUTTON_START, app_key_down('C') || app_key_down(VK_RETURN));
+    nes_set_button(&g_app.nes, NES_BUTTON_SELECT, app_key_down('V') || app_key_down(VK_BACK));
+
+    reset_pressed = app_key_down('B');
+    if (reset_pressed && !g_app.reset_key_down) {
+        nes_reset(&g_app.nes);
+        if (g_app.nes.rom_loaded) {
+            format_loaded_status(g_app.rom_path);
+        } else {
+            app_set_status(L"Reset.");
+        }
+    }
+    g_app.reset_key_down = reset_pressed;
 }
 
 static void set_key_state(HWND hwnd, WPARAM key, int pressed, LPARAM lparam)
@@ -342,6 +390,7 @@ static void set_key_state(HWND hwnd, WPARAM key, int pressed, LPARAM lparam)
     default:
         return;
     }
+    SetFocus(hwnd);
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
@@ -436,7 +485,7 @@ static void paint_window(HWND hwnd)
 
         swprintf(text,
                  sizeof(text) / sizeof(text[0]),
-                 L"NESEMU\n\n%ls\n\nDrop a .nes ROM file onto this window.\nKeys: WASD move, Z A, X B, C START, V SELECT, B reset.\nPressed: %ls",
+                 L"NESEMU\n\n%ls\n\nDrop a .nes ROM file onto this window.\nKeys: WASD/Arrows move, Z/Space A, X/Shift B, C/Enter START, V/Backspace SELECT, B reset.\nPressed: %ls",
                  g_app.status[0] != L'\0' ? g_app.status : L"No ROM loaded.",
                  buttons);
 
@@ -470,6 +519,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
     case WM_DROPFILES:
         handle_drop(hwnd, (HDROP)wparam);
         return 0;
+    case WM_LBUTTONDOWN:
+        SetFocus(hwnd);
+        return 0;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         set_key_state(hwnd, wparam, 1, lparam);
@@ -483,6 +535,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         return 0;
     case WM_TIMER:
         if (wparam == FRAME_TIMER_ID && g_app.nes.rom_loaded) {
+            app_sync_keyboard(hwnd);
             nes_run_frame(&g_app.nes);
             audio_pump();
             InvalidateRect(hwnd, NULL, FALSE);

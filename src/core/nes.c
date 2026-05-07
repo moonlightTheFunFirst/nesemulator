@@ -44,6 +44,10 @@ static const int noise_periods[16] = {
     4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068
 };
 
+static const int dmc_periods[16] = {
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 85, 72, 54
+};
+
 static const uint8_t apu_length_table[32] = {
     10, 254, 20, 2, 40, 4, 80, 6,
     160, 8, 60, 10, 14, 12, 26, 14,
@@ -261,6 +265,17 @@ static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         nes->apu.regs[address - 0x4000u] = value;
     }
     switch (address) {
+    case 0x4010u:
+        break;
+    case 0x4011u:
+        nes->apu.dmc_output = (uint8_t)(value & 0x7Fu);
+        break;
+    case 0x4012u:
+        nes->apu.dmc_sample_address = (uint16_t)(0xC000u | ((uint16_t)value << 6));
+        break;
+    case 0x4013u:
+        nes->apu.dmc_sample_length = (uint16_t)(((uint16_t)value << 4) | 1u);
+        break;
     case 0x4003u:
         if ((nes->apu.status & 0x01u) != 0) {
             nes->apu.length_counter[0] = apu_length_table[value >> 3];
@@ -295,6 +310,14 @@ static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         if ((value & 0x08u) == 0) {
             nes->apu.length_counter[3] = 0;
         }
+        if ((value & 0x10u) == 0) {
+            nes->apu.dmc_bytes_remaining = 0;
+            nes->apu.dmc_bits_remaining = 0;
+            nes->apu.dmc_silence = 1;
+        } else if (nes->apu.dmc_bytes_remaining == 0) {
+            nes->apu.dmc_current_address = nes->apu.dmc_sample_address;
+            nes->apu.dmc_bytes_remaining = nes->apu.dmc_sample_length;
+        }
         break;
     default:
         break;
@@ -318,9 +341,43 @@ static uint8_t apu_read(NesEmu *nes, uint16_t address)
         if (nes->apu.length_counter[3] != 0) {
             status |= 0x08u;
         }
+        if (nes->apu.dmc_bytes_remaining != 0 || nes->apu.dmc_bits_remaining != 0) {
+            status |= 0x10u;
+        }
         return status;
     }
     return 0;
+}
+
+static void joypad_latch(NesEmu *nes)
+{
+    nes->joypad.shift = nes->joypad.state;
+    nes->joypad2.shift = nes->joypad2.state;
+}
+
+static uint8_t joypad_read(NesJoypad *joypad)
+{
+    uint8_t bit;
+
+    if (joypad->strobe) {
+        bit = (uint8_t)(joypad->state & 1u);
+    } else {
+        bit = (uint8_t)(joypad->shift & 1u);
+        joypad->shift = (uint8_t)(0x80u | (joypad->shift >> 1));
+    }
+    return (uint8_t)(0x40u | bit);
+}
+
+static void joypad_write_strobe(NesEmu *nes, uint8_t value)
+{
+    uint8_t new_strobe = (uint8_t)(value & 1u);
+    uint8_t old_strobe = nes->joypad.strobe;
+
+    nes->joypad.strobe = new_strobe;
+    nes->joypad2.strobe = new_strobe;
+    if (new_strobe || (old_strobe && !new_strobe)) {
+        joypad_latch(nes);
+    }
 }
 
 static uint8_t cpu_read_bus(NesEmu *nes, uint16_t address)
@@ -335,11 +392,10 @@ static uint8_t cpu_read_bus(NesEmu *nes, uint16_t address)
         return apu_read(nes, address);
     }
     if (address == 0x4016u) {
-        uint8_t value = (uint8_t)(0x40u | (nes->joypad.shift & 1u));
-        if (!nes->joypad.strobe) {
-            nes->joypad.shift = (uint8_t)(0x80u | (nes->joypad.shift >> 1));
-        }
-        return value;
+        return joypad_read(&nes->joypad);
+    }
+    if (address == 0x4017u) {
+        return joypad_read(&nes->joypad2);
     }
     if (address >= 0x6000u && address <= 0x7FFFu) {
         return nes->mapper.prg_ram[address - 0x6000u];
@@ -385,10 +441,7 @@ static void cpu_write_bus(NesEmu *nes, uint16_t address, uint8_t value)
         return;
     }
     if (address == 0x4016u) {
-        nes->joypad.strobe = (uint8_t)(value & 1u);
-        if (nes->joypad.strobe) {
-            nes->joypad.shift = nes->joypad.state;
-        }
+        joypad_write_strobe(nes, value);
         return;
     }
     if (address >= 0x6000u && address <= 0x7FFFu) {
@@ -663,6 +716,9 @@ static int cpu_step(NesEmu *nes)
     int page_crossed = 0;
     int cycles = 0;
 
+    if (nes->cpu.stopped) {
+        return 1;
+    }
     if (nes->cpu.nmi_pending) {
         cpu_service_nmi(nes);
         return 7;
@@ -679,8 +735,24 @@ static int cpu_step(NesEmu *nes)
         nes->cpu.pc = cpu_read16(nes, 0xFFFEu);
         cycles = 7;
         break;
+    case 0x02:
+    case 0x12:
+    case 0x22:
+    case 0x32:
+    case 0x42:
+    case 0x52:
+    case 0x62:
+    case 0x72:
+    case 0x92:
+    case 0xB2:
+    case 0xD2:
+    case 0xF2:
+        nes->cpu.stopped = 1;
+        cycles = 2;
+        break;
     case 0x01:
-        op_adc(nes, cpu_read_bus(nes, addr_indx(nes)));
+        nes->cpu.a |= cpu_read_bus(nes, addr_indx(nes));
+        cpu_set_zn(nes, nes->cpu.a);
         cycles = 6;
         break;
     case 0x03:
@@ -688,7 +760,8 @@ static int cpu_step(NesEmu *nes)
         cycles = 8;
         break;
     case 0x05:
-        op_adc(nes, cpu_read_bus(nes, addr_zp(nes)));
+        nes->cpu.a |= cpu_read_bus(nes, addr_zp(nes));
+        cpu_set_zn(nes, nes->cpu.a);
         cycles = 3;
         break;
     case 0x06:
@@ -2002,6 +2075,67 @@ static double noise_sample(NesApu *apu, int sample_rate)
     return ((apu->noise_lfsr & 1u) ? -1.0 : 1.0) * ((double)volume / 15.0) * 0.45;
 }
 
+static void dmc_start_sample(NesApu *apu)
+{
+    apu->dmc_current_address = apu->dmc_sample_address;
+    apu->dmc_bytes_remaining = apu->dmc_sample_length;
+}
+
+static void dmc_fetch_byte(NesEmu *nes)
+{
+    NesApu *apu = &nes->apu;
+
+    if (apu->dmc_bytes_remaining == 0) {
+        if ((apu->regs[0x10] & 0x40u) != 0 && (apu->status & 0x10u) != 0) {
+            dmc_start_sample(apu);
+        } else {
+            apu->dmc_silence = 1;
+            return;
+        }
+    }
+
+    apu->dmc_shift = cpu_read_bus(nes, apu->dmc_current_address);
+    apu->dmc_current_address++;
+    if (apu->dmc_current_address == 0) {
+        apu->dmc_current_address = 0x8000u;
+    }
+    apu->dmc_bytes_remaining--;
+    apu->dmc_bits_remaining = 8;
+    apu->dmc_silence = 0;
+}
+
+static double dmc_sample(NesEmu *nes, int sample_rate)
+{
+    NesApu *apu = &nes->apu;
+    int period = dmc_periods[apu->regs[0x10] & 0x0Fu];
+    double freq = (double)CPU_CLOCK_NTSC / (double)period;
+
+    if ((apu->status & 0x10u) == 0) {
+        return 0.0;
+    }
+    apu->dmc_phase += freq / (double)sample_rate;
+    while (apu->dmc_phase >= 1.0) {
+        if (apu->dmc_bits_remaining == 0) {
+            dmc_fetch_byte(nes);
+        }
+        if (apu->dmc_bits_remaining != 0) {
+            if (!apu->dmc_silence) {
+                if ((apu->dmc_shift & 1u) != 0) {
+                    if (apu->dmc_output <= 125u) {
+                        apu->dmc_output = (uint8_t)(apu->dmc_output + 2u);
+                    }
+                } else if (apu->dmc_output >= 2u) {
+                    apu->dmc_output = (uint8_t)(apu->dmc_output - 2u);
+                }
+            }
+            apu->dmc_shift >>= 1;
+            apu->dmc_bits_remaining--;
+        }
+        apu->dmc_phase -= 1.0;
+    }
+    return ((double)apu->dmc_output - 64.0) / 64.0;
+}
+
 void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sample_rate)
 {
     size_t i;
@@ -2020,6 +2154,7 @@ void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sa
         mix += pulse_sample(&nes->apu, 1, sample_rate) * 0.22;
         mix += triangle_sample(&nes->apu, sample_rate) * 0.18;
         mix += noise_sample(&nes->apu, sample_rate) * 0.12;
+        mix += dmc_sample(nes, sample_rate) * 0.12;
         if (mix > 1.0) {
             mix = 1.0;
         } else if (mix < -1.0) {
@@ -2058,6 +2193,9 @@ void nes_reset(NesEmu *nes)
     memset(&nes->ppu, 0, sizeof(nes->ppu));
     memset(&nes->apu, 0, sizeof(nes->apu));
     nes->apu.noise_lfsr = 1;
+    nes->apu.dmc_sample_address = 0xC000u;
+    nes->apu.dmc_sample_length = 1;
+    nes->apu.dmc_silence = 1;
     nes->cpu.p = CPU_I | CPU_U;
     nes->cpu.sp = 0xFDu;
     nes->ppu.scanline = 0;
@@ -2163,6 +2301,9 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     nes->joypad.state = 0;
     nes->joypad.shift = 0;
     nes->joypad.strobe = 0;
+    nes->joypad2.state = 0;
+    nes->joypad2.shift = 0;
+    nes->joypad2.strobe = 0;
     nes_reset(nes);
     return NES_RESULT_OK;
 }

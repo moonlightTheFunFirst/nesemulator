@@ -70,6 +70,7 @@ typedef struct NesCpu {
     uint64_t cycles;
     int nmi_pending;
     int extra_cycles;
+    int stopped;
 } NesCpu;
 
 typedef struct NesPpu {
@@ -102,6 +103,15 @@ typedef struct NesApu {
     double noise_phase;
     uint16_t noise_lfsr;
     uint8_t length_counter[4];
+    double dmc_phase;
+    uint16_t dmc_sample_address;
+    uint16_t dmc_sample_length;
+    uint16_t dmc_current_address;
+    uint16_t dmc_bytes_remaining;
+    uint8_t dmc_shift;
+    uint8_t dmc_bits_remaining;
+    uint8_t dmc_output;
+    uint8_t dmc_silence;
 } NesApu;
 
 typedef struct NesJoypad {
@@ -117,6 +127,7 @@ typedef struct NesEmu {
     NesPpu ppu;
     NesApu apu;
     NesJoypad joypad;
+    NesJoypad joypad2;
     uint8_t ram[2048];
     uint16_t reset_vector;
     uint8_t rom_loaded;

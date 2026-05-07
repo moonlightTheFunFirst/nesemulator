@@ -14,11 +14,11 @@ NESEMU is an early C-based NES emulator project. The first implementation target
 - Renders a 256x240 framebuffer with background and sprite drawing.
 - Outputs basic APU pulse, triangle, and noise audio through the Windows host.
 - Tracks controller input:
-  - `WASD`: directional pad
-  - `Z`: A
-  - `X`: B
-  - `C`: START
-  - `V`: SELECT
+  - `WASD` or arrow keys: directional pad
+  - `Z` or Space: A
+  - `X` or Shift: B
+  - `C` or Enter: START
+  - `V` or Backspace: SELECT
   - `B`: reset
 
 This is not cycle-perfect yet. PPU scrolling, sprite evaluation, APU envelope/sweep/length behavior, DMC, and many unofficial CPU opcodes still need accuracy work.

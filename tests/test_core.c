@@ -96,6 +96,54 @@ static int test_cpu_executes_program(void)
     return ok;
 }
 
+static int test_ora_opcodes(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0xA9, 0x05,       /* LDA #$05 */
+        0x85, 0x20,       /* STA $20 */
+        0xA9, 0x03,       /* LDA #$03 */
+        0x05, 0x20,       /* ORA $20 */
+        0x85, 0x30,       /* STA $30 */
+        0xA9, 0x00,       /* LDA #$00 */
+        0x85, 0x14,       /* STA $14 */
+        0xA9, 0x02,       /* LDA #$02 */
+        0x85, 0x15,       /* STA $15 */
+        0xA9, 0x05,       /* LDA #$05 */
+        0x8D, 0x00, 0x02, /* STA $0200 */
+        0xA2, 0x04,       /* LDX #$04 */
+        0xA9, 0x03,       /* LDA #$03 */
+        0x01, 0x10,       /* ORA ($10,X) */
+        0x85, 0x31,       /* STA $31 */
+        0x4C, 0x22, 0x80  /* JMP $8022 */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load ora rom", result, NES_RESULT_OK);
+    nes_run_frame(&nes);
+    ok &= expect_int("ora zp", nes_cpu_read(&nes, 0x0030), 0x07);
+    ok &= expect_int("ora indx", nes_cpu_read(&nes, 0x0031), 0x07);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_joypad_shift(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -124,6 +172,104 @@ static int test_joypad_shift(void)
     ok &= expect_int("joypad B", nes_cpu_read(&nes, 0x4016) & 1, 0);
     ok &= expect_int("joypad SELECT", nes_cpu_read(&nes, 0x4016) & 1, 0);
     ok &= expect_int("joypad START", nes_cpu_read(&nes, 0x4016) & 1, 1);
+    nes_cpu_write(&nes, 0x4016, 1);
+    nes_cpu_write(&nes, 0x4016, 0);
+    ok &= expect_int("joypad2 A released", nes_cpu_read(&nes, 0x4017) & 1, 0);
+    ok &= expect_int("joypad2 B released", nes_cpu_read(&nes, 0x4017) & 1, 0);
+    ok &= expect_int("joypad2 SELECT released", nes_cpu_read(&nes, 0x4017) & 1, 0);
+    ok &= expect_int("joypad2 START released", nes_cpu_read(&nes, 0x4017) & 1, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static uint8_t balloon_style_controller_read(NesEmu *nes, uint16_t address)
+{
+    uint8_t value = nes_cpu_read(nes, address);
+
+    return (uint8_t)(((value >> 1) | value) & 1u);
+}
+
+static int test_balloon_fight_controller_poll_shape(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int i;
+    uint8_t p1 = 0;
+    uint8_t p2 = 0;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load balloon joypad rom", result, NES_RESULT_OK);
+    nes_set_button(&nes, NES_BUTTON_A, 1);
+    nes_set_button(&nes, NES_BUTTON_START, 1);
+    nes_cpu_write(&nes, 0x4016, 1);
+    nes_cpu_write(&nes, 0x4016, 0);
+    for (i = 0; i < 8; ++i) {
+        p1 = (uint8_t)((p1 << 1) | balloon_style_controller_read(&nes, 0x4016));
+        p2 = (uint8_t)((p2 << 1) | balloon_style_controller_read(&nes, 0x4017));
+    }
+    ok &= expect_int("balloon p1 A+START bits", p1, 0x90);
+    ok &= expect_int("balloon p2 empty", p2, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_balloon_fight_controller_routine(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0xA2, 0x00,       /* LDX #$00 */
+        0xA9, 0x01,       /* LDA #$01 */
+        0x8D, 0x16, 0x40, /* STA $4016 */
+        0xA9, 0x00,       /* LDA #$00 */
+        0x8D, 0x16, 0x40, /* STA $4016 */
+        0xA0, 0x07,       /* LDY #$07 */
+        0xBD, 0x16, 0x40, /* LDA $4016,X */
+        0x85, 0x12,       /* STA $12 */
+        0x4A,             /* LSR A */
+        0x05, 0x12,       /* ORA $12 */
+        0x4A,             /* LSR A */
+        0x3E, 0x1C, 0x06, /* ROL $061C,X */
+        0x88,             /* DEY */
+        0x10, 0xF1,       /* BPL loop */
+        0x4C, 0x20, 0x80  /* JMP $8020 */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load balloon routine rom", result, NES_RESULT_OK);
+    nes_set_button(&nes, NES_BUTTON_A, 1);
+    nes_set_button(&nes, NES_BUTTON_START, 1);
+    nes_run_frame(&nes);
+    ok &= expect_int("balloon routine RAM bits", nes_cpu_read(&nes, 0x061C), 0x90);
     nes_shutdown(&nes);
     return ok;
 }
@@ -198,6 +344,76 @@ static int test_apu_length_counter(void)
         nes_run_frame(&nes);
     }
     ok &= expect_int("apu length expires", nes_cpu_read(&nes, 0x4015) & 1, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_dmc_playback_progresses(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    int16_t samples[512];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int i;
+    int nonzero = 0;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16] = 0xFF;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load dmc rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4010, 0x0F);
+    nes_cpu_write(&nes, 0x4011, 0x40);
+    nes_cpu_write(&nes, 0x4012, 0x00);
+    nes_cpu_write(&nes, 0x4013, 0x00);
+    nes_cpu_write(&nes, 0x4015, 0x10);
+    nes_render_audio(&nes, samples, sizeof(samples) / sizeof(samples[0]), NESEMU_AUDIO_RATE);
+    for (i = 0; i < (int)(sizeof(samples) / sizeof(samples[0])); ++i) {
+        if (samples[i] != 0) {
+            nonzero = 1;
+            break;
+        }
+    }
+    ok &= expect_int("dmc produced sample", nonzero, 1);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_kil_opcode_stops_cpu(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16] = 0x02;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load kil rom", result, NES_RESULT_OK);
+    nes_run_frame(&nes);
+    ok &= expect_int("kil stops", nes.cpu.stopped, 1);
     nes_shutdown(&nes);
     return ok;
 }
@@ -308,9 +524,14 @@ int main(int argc, char **argv)
 
     ok &= test_mapper0_load_and_map();
     ok &= test_cpu_executes_program();
+    ok &= test_ora_opcodes();
     ok &= test_joypad_shift();
+    ok &= test_balloon_fight_controller_poll_shape();
+    ok &= test_balloon_fight_controller_routine();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
+    ok &= test_dmc_playback_progresses();
+    ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
     for (i = 1; i < argc; ++i) {
         ok &= run_rom_smoke_test(argv[i]);
