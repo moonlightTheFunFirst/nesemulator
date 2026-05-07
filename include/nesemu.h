@@ -59,6 +59,15 @@ typedef struct NesMapper {
     size_t chr_mem_size;
     uint8_t chr_is_ram;
     uint8_t chr_bank;
+    uint8_t mapper4_bank_select;
+    uint8_t mapper4_regs[8];
+    uint8_t mapper4_prg_mode;
+    uint8_t mapper4_chr_mode;
+    uint8_t mapper4_irq_latch;
+    uint8_t mapper4_irq_counter;
+    uint8_t mapper4_irq_reload;
+    uint8_t mapper4_irq_enabled;
+    uint8_t mapper4_irq_pending;
     uint8_t prg_ram[NESEMU_PRG_RAM_SIZE];
 } NesMapper;
 

@@ -6,6 +6,10 @@
 
 #define TEST_ROM_SIZE (16u + NESEMU_PRG_BANK_SIZE + NESEMU_CHR_BANK_SIZE)
 #define TEST_MAPPER3_ROM_SIZE (16u + NESEMU_PRG_BANK_SIZE * 2u + NESEMU_CHR_BANK_SIZE * 4u)
+#define TEST_MAPPER4_PRG_BANKS 4u
+#define TEST_MAPPER4_CHR_BANKS 2u
+#define TEST_MAPPER4_ROM_SIZE \
+    (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER4_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER4_CHR_BANKS)
 
 static int expect_int(const char *name, int actual, int expected)
 {
@@ -101,6 +105,99 @@ static int test_mapper3_chr_bank_switch(void)
     nes_cpu_write(&nes, 0x8000, 3);
     nes_ppu_write(&nes, 0x0000, 0xEE);
     ok &= expect_int("mapper3 chr rom ignores writes", nes_ppu_read(&nes, 0x0000), 0x13);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper4_bank_switch_and_irq(void)
+{
+    uint8_t rom[TEST_MAPPER4_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_size = NESEMU_PRG_BANK_SIZE * TEST_MAPPER4_PRG_BANKS;
+    size_t chr_offset = 16u + prg_size;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int bank;
+    uint8_t program[] = {
+        0x58,                   /* CLI */
+        0xA9, 0x01,             /* LDA #$01 */
+        0x8D, 0x00, 0xC0,       /* STA $C000: IRQ latch */
+        0xA9, 0x00,             /* LDA #$00 */
+        0x8D, 0x01, 0xC0,       /* STA $C001: reload */
+        0x8D, 0x01, 0xE0,       /* STA $E001: enable */
+        0xA9, 0x18,             /* LDA #$18 */
+        0x8D, 0x01, 0x20,       /* STA $2001: show bg/sprites */
+        0x4C, 0x13, 0xE0        /* JMP $E013 */
+    };
+    uint8_t irq_handler[] = {
+        0xA9, 0x00,             /* LDA #$00 */
+        0x8D, 0x00, 0xE0,       /* STA $E000: disable/ack IRQ */
+        0xE6, 0x20,             /* INC $20 */
+        0x40                    /* RTI */
+    };
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER4_PRG_BANKS;
+    rom[5] = TEST_MAPPER4_CHR_BANKS;
+    rom[6] = 0x40;
+    rom[7] = 0;
+    for (bank = 0; bank < 8; ++bank) {
+        rom[prg_offset + (size_t)bank * 0x2000u] = (uint8_t)(0x80 + bank);
+    }
+    for (bank = 0; bank < 16; ++bank) {
+        rom[chr_offset + (size_t)bank * 0x0400u] = (uint8_t)(0x40 + bank);
+        rom[chr_offset + (size_t)bank * 0x0400u + 0x03FFu] = (uint8_t)(0xC0 + bank);
+    }
+    memcpy(&rom[prg_offset + 7u * 0x2000u], program, sizeof(program));
+    memcpy(&rom[prg_offset + 7u * 0x2000u + 0x0100u], irq_handler, sizeof(irq_handler));
+    rom[prg_offset + 7u * 0x2000u + 0x1FFCu] = 0x00;
+    rom[prg_offset + 7u * 0x2000u + 0x1FFDu] = 0xE0;
+    rom[prg_offset + 7u * 0x2000u + 0x1FFEu] = 0x00;
+    rom[prg_offset + 7u * 0x2000u + 0x1FFFu] = 0xE1;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper4", result, NES_RESULT_OK);
+    ok &= expect_int("mapper4 id", nes.rom.mapper_id, 4);
+    ok &= expect_int("mapper4 initial 8000", nes_cpu_read(&nes, 0x8000), 0x80);
+    ok &= expect_int("mapper4 initial A000", nes_cpu_read(&nes, 0xA000), 0x81);
+    ok &= expect_int("mapper4 initial C000", nes_cpu_read(&nes, 0xC000), 0x86);
+    ok &= expect_int("mapper4 initial E000", nes_cpu_read(&nes, 0xE000), 0x58);
+    nes_cpu_write(&nes, 0x8000, 0x06);
+    nes_cpu_write(&nes, 0x8001, 0x03);
+    ok &= expect_int("mapper4 prg r6 bank", nes_cpu_read(&nes, 0x8000), 0x83);
+    nes_cpu_write(&nes, 0x8000, 0x07);
+    nes_cpu_write(&nes, 0x8001, 0x04);
+    ok &= expect_int("mapper4 prg r7 bank", nes_cpu_read(&nes, 0xA000), 0x84);
+    nes_cpu_write(&nes, 0x8000, 0x46);
+    nes_cpu_write(&nes, 0x8001, 0x02);
+    ok &= expect_int("mapper4 prg mode fixed 8000", nes_cpu_read(&nes, 0x8000), 0x86);
+    ok &= expect_int("mapper4 prg mode r6 C000", nes_cpu_read(&nes, 0xC000), 0x82);
+    nes_cpu_write(&nes, 0xA000, 0x00);
+    ok &= expect_int("mapper4 mirroring vertical", nes.rom.mirroring, NES_MIRROR_VERTICAL);
+    nes_cpu_write(&nes, 0xA000, 0x01);
+    ok &= expect_int("mapper4 mirroring horizontal", nes.rom.mirroring, NES_MIRROR_HORIZONTAL);
+    nes_cpu_write(&nes, 0x8000, 0x00);
+    nes_cpu_write(&nes, 0x8001, 0x04);
+    ok &= expect_int("mapper4 chr r0 low", nes_ppu_read(&nes, 0x0000), 0x44);
+    ok &= expect_int("mapper4 chr r0 high", nes_ppu_read(&nes, 0x0400), 0x45);
+    nes_cpu_write(&nes, 0x8000, 0x02);
+    nes_cpu_write(&nes, 0x8001, 0x09);
+    ok &= expect_int("mapper4 chr r2", nes_ppu_read(&nes, 0x1000), 0x49);
+    nes_cpu_write(&nes, 0x8000, 0x82);
+    ok &= expect_int("mapper4 chr mode r2 low", nes_ppu_read(&nes, 0x0000), 0x49);
+    ok &= expect_int("mapper4 chr mode r0 high", nes_ppu_read(&nes, 0x1000), 0x44);
+
+    nes_reset(&nes);
+    nes_run_frame(&nes);
+    ok &= expect_int("mapper4 scanline irq reached handler", nes_cpu_read(&nes, 0x0020), 1);
+    ok &= expect_int("mapper4 irq acknowledged", nes.mapper.mapper4_irq_pending, 0);
 
     nes_shutdown(&nes);
     return ok;
@@ -981,6 +1078,7 @@ int main(int argc, char **argv)
 
     ok &= test_mapper0_load_and_map();
     ok &= test_mapper3_chr_bank_switch();
+    ok &= test_mapper4_bank_switch_and_irq();
     ok &= test_cpu_executes_program();
     ok &= test_ora_opcodes();
     ok &= test_joypad_shift();

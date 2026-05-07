@@ -17,6 +17,7 @@ enum {
 };
 
 int nes_cpu_step(NesEmu *nes);
+void nes_update_irq(NesEmu *nes);
 
 uint8_t nes_cpu_bus_read(NesEmu *nes, uint16_t address);
 uint8_t nes_cpu_bus_read_delayed(NesEmu *nes, uint16_t address, int cpu_cycles);

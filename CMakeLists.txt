@@ -11,6 +11,7 @@ add_library(nesemu_core
     src/core/cpu.c
     src/core/apu.c
     src/core/mapper/mapper3.c
+    src/core/mapper/mapper4.c
 )
 target_include_directories(nesemu_core PUBLIC include)
 

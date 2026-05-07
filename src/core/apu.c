@@ -47,11 +47,6 @@ static const uint8_t apu_length_table[32] = {
 
 static const uint8_t apu_envelope_reg_index[3] = { 0, 4, 12 };
 
-static void nes_update_irq(NesEmu *nes)
-{
-    nes->cpu.irq_pending = nes->apu.frame_irq != 0;
-}
-
 void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     if (address >= 0x4000u && address <= 0x4017u) {

@@ -1,6 +1,7 @@
 #include "nes_internal.h"
 #include "apu.h"
 #include "mapper/mapper3.h"
+#include "mapper/mapper4.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,17 @@ static void nes_mapper_clear(NesMapper *mapper)
         free(mapper->chr_mem);
     }
     memset(mapper, 0, sizeof(*mapper));
+}
+
+void nes_update_irq(NesEmu *nes)
+{
+    int mapper_irq;
+
+    if (nes == NULL) {
+        return;
+    }
+    mapper_irq = nes->rom_loaded && nes->rom.mapper_id == 4u && nes->mapper.mapper4_irq_pending;
+    nes->cpu.irq_pending = (nes->apu.frame_irq != 0) || mapper_irq;
 }
 
 static uint8_t palette_read(const NesPpu *ppu, uint16_t address)
@@ -109,6 +121,9 @@ uint8_t nes_ppu_read(const NesEmu *nes, uint16_t address)
         if (nes->rom.mapper_id == 3u) {
             return nes_mapper3_chr_read(&nes->mapper, address);
         }
+        if (nes->rom.mapper_id == 4u) {
+            return nes_mapper4_chr_read(&nes->mapper, address);
+        }
         return nes->mapper.chr_mem[address % nes->mapper.chr_mem_size];
     }
     if (address < 0x3F00u) {
@@ -123,6 +138,10 @@ void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
     if (address < 0x2000u) {
         if (nes->rom_loaded && nes->rom.mapper_id == 3u) {
             nes_mapper3_chr_write(&nes->mapper, address, value);
+            return;
+        }
+        if (nes->rom_loaded && nes->rom.mapper_id == 4u) {
+            nes_mapper4_chr_write(&nes->mapper, address, value);
             return;
         }
         if (nes->rom_loaded && nes->mapper.chr_is_ram && nes->mapper.chr_mem_size != 0) {
@@ -320,6 +339,9 @@ uint8_t nes_cpu_bus_read(NesEmu *nes, uint16_t address)
         if (nes->rom.mapper_id == 3u) {
             return nes_mapper3_prg_read(&nes->mapper, address);
         }
+        if (nes->rom.mapper_id == 4u) {
+            return nes_mapper4_prg_read(&nes->mapper, address);
+        }
         size_t offset = (size_t)(address - 0x8000u);
         if (nes->mapper.prg_rom_size == NESEMU_PRG_BANK_SIZE) {
             offset %= NESEMU_PRG_BANK_SIZE;
@@ -404,6 +426,10 @@ void nes_cpu_bus_write(NesEmu *nes, uint16_t address, uint8_t value)
     }
     if (address >= 0x8000u && nes->rom.mapper_id == 3u) {
         nes_mapper3_prg_write(&nes->mapper, address, value);
+        return;
+    }
+    if (address >= 0x8000u && nes->rom.mapper_id == 4u) {
+        nes_mapper4_prg_write(nes, address, value);
     }
 }
 
@@ -709,6 +735,9 @@ static void ppu_process_current_cycle(NesEmu *nes)
         if (nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
             ppu_increment_y(&nes->ppu);
             ppu_copy_horizontal_bits(&nes->ppu);
+            if (nes->rom.mapper_id == 4u) {
+                nes_mapper4_clock_scanline(nes);
+            }
         } else if (nes->ppu.scanline == 261) {
             ppu_copy_horizontal_bits(&nes->ppu);
         }
@@ -861,7 +890,7 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     flags6 = data[6];
     flags7 = data[7];
     mapper_id = (uint8_t)((flags6 >> 4) | (flags7 & 0xF0u));
-    if (mapper_id != 0 && mapper_id != 3u) {
+    if (mapper_id != 0 && mapper_id != 3u && mapper_id != 4u) {
         return NES_RESULT_UNSUPPORTED_MAPPER;
     }
 
@@ -921,6 +950,8 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     mapper.chr_mem_size = chr_size;
     if (mapper_id == 3u) {
         nes_mapper3_init(&mapper);
+    } else if (mapper_id == 4u) {
+        nes_mapper4_init(&mapper);
     }
 
     nes_mapper_clear(&nes->mapper);
