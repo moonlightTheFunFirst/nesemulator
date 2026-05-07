@@ -8,6 +8,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_library(nesemu_core
     src/core/nes.c
+    src/core/cpu.c
 )
 target_include_directories(nesemu_core PUBLIC include)
 
