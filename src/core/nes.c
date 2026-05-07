@@ -1,4 +1,5 @@
 #include "nes_internal.h"
+#include "mapper/mapper3.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -55,7 +56,9 @@ static const uint8_t apu_length_table[32] = {
 static const uint8_t apu_envelope_reg_index[3] = { 0, 4, 12 };
 
 static void ppu_step(NesEmu *nes, int ppu_cycles);
-static void apu_clock_frame_counter(NesApu *apu, int cycles);
+static void apu_clock_length_counters(NesApu *apu);
+static void apu_clock_quarter_frame(NesApu *apu);
+static void apu_clock_frame_counter(NesEmu *nes, int cycles);
 static void apu_clock_audio(NesEmu *nes, int cycles);
 
 static void nes_mapper_clear(NesMapper *mapper)
@@ -125,6 +128,9 @@ uint8_t nes_ppu_read(const NesEmu *nes, uint16_t address)
         if (!nes->rom_loaded || nes->mapper.chr_mem_size == 0) {
             return 0xFFu;
         }
+        if (nes->rom.mapper_id == 3u) {
+            return nes_mapper3_chr_read(&nes->mapper, address);
+        }
         return nes->mapper.chr_mem[address % nes->mapper.chr_mem_size];
     }
     if (address < 0x3F00u) {
@@ -137,6 +143,10 @@ void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     address &= 0x3FFFu;
     if (address < 0x2000u) {
+        if (nes->rom_loaded && nes->rom.mapper_id == 3u) {
+            nes_mapper3_chr_write(&nes->mapper, address, value);
+            return;
+        }
         if (nes->rom_loaded && nes->mapper.chr_is_ram && nes->mapper.chr_mem_size != 0) {
             nes->mapper.chr_mem[address % nes->mapper.chr_mem_size] = value;
         }
@@ -277,6 +287,11 @@ static void ppu_schedule_register_write(NesEmu *nes, uint16_t address, uint8_t v
     nes->ppu.pending_write = 1;
 }
 
+static void nes_update_irq(NesEmu *nes)
+{
+    nes->cpu.irq_pending = nes->apu.frame_irq != 0;
+}
+
 static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     if (address >= 0x4000u && address <= 0x4017u) {
@@ -344,8 +359,12 @@ static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
     case 0x4017u:
         nes->apu.frame_counter_accumulator = 0.0;
         nes->apu.frame_half_step = 0;
+        nes->apu.frame_step = 0;
+        nes->apu.frame_irq = 0;
+        nes_update_irq(nes);
         if ((value & 0x80u) != 0) {
-            apu_clock_frame_counter(&nes->apu, CPU_CLOCK_NTSC / 240);
+            apu_clock_quarter_frame(&nes->apu);
+            apu_clock_length_counters(&nes->apu);
         }
         break;
     default:
@@ -372,6 +391,11 @@ static uint8_t apu_read(NesEmu *nes, uint16_t address)
         }
         if (nes->apu.dmc_bytes_remaining != 0 || nes->apu.dmc_bits_remaining != 0) {
             status |= 0x10u;
+        }
+        if (nes->apu.frame_irq) {
+            status |= 0x40u;
+            nes->apu.frame_irq = 0;
+            nes_update_irq(nes);
         }
         return status;
     }
@@ -430,6 +454,9 @@ uint8_t nes_cpu_bus_read(NesEmu *nes, uint16_t address)
         return nes->mapper.prg_ram[address - 0x6000u];
     }
     if (address >= 0x8000u && nes->mapper.prg_rom_size > 0) {
+        if (nes->rom.mapper_id == 3u) {
+            return nes_mapper3_prg_read(&nes->mapper, address);
+        }
         size_t offset = (size_t)(address - 0x8000u);
         if (nes->mapper.prg_rom_size == NESEMU_PRG_BANK_SIZE) {
             offset %= NESEMU_PRG_BANK_SIZE;
@@ -510,6 +537,10 @@ void nes_cpu_bus_write(NesEmu *nes, uint16_t address, uint8_t value)
     }
     if (address >= 0x6000u && address <= 0x7FFFu) {
         nes->mapper.prg_ram[address - 0x6000u] = value;
+        return;
+    }
+    if (address >= 0x8000u && nes->rom.mapper_id == 3u) {
+        nes_mapper3_prg_write(&nes->mapper, address, value);
     }
 }
 
@@ -869,7 +900,7 @@ static void ppu_step(NesEmu *nes, int ppu_cycles)
 static void clock_cpu_cycles(NesEmu *nes, int cycles)
 {
     nes->cpu.cycles += (uint64_t)cycles;
-    apu_clock_frame_counter(&nes->apu, cycles);
+    apu_clock_frame_counter(nes, cycles);
     ppu_step(nes, cycles * 3);
     apu_clock_audio(nes, cycles);
 }
@@ -941,8 +972,9 @@ static void apu_clock_quarter_frame(NesApu *apu)
     apu_clock_triangle_linear(apu);
 }
 
-static void apu_clock_frame_counter(NesApu *apu, int cycles)
+static void apu_clock_frame_counter(NesEmu *nes, int cycles)
 {
+    NesApu *apu = &nes->apu;
     const double quarter_frame_cycles = (double)CPU_CLOCK_NTSC / 240.0;
 
     if (cycles <= 0) {
@@ -951,10 +983,22 @@ static void apu_clock_frame_counter(NesApu *apu, int cycles)
     apu->frame_counter_accumulator += (double)cycles;
     while (apu->frame_counter_accumulator >= quarter_frame_cycles) {
         apu_clock_quarter_frame(apu);
-        if (apu->frame_half_step) {
-            apu_clock_length_counters(apu);
+        if ((apu->regs[0x17] & 0x80u) != 0) {
+            if (apu->frame_step == 1u || apu->frame_step == 4u) {
+                apu_clock_length_counters(apu);
+            }
+            apu->frame_step = (uint8_t)((apu->frame_step + 1u) % 5u);
+        } else {
+            if (apu->frame_step == 1u || apu->frame_step == 3u) {
+                apu_clock_length_counters(apu);
+            }
+            if (apu->frame_step == 3u && (apu->regs[0x17] & 0x40u) == 0) {
+                apu->frame_irq = 1;
+                nes_update_irq(nes);
+            }
+            apu->frame_step = (uint8_t)((apu->frame_step + 1u) & 3u);
         }
-        apu->frame_half_step = (uint8_t)!apu->frame_half_step;
+        apu->frame_half_step = (uint8_t)(apu->frame_step & 1u);
         apu->frame_counter_accumulator -= quarter_frame_cycles;
     }
 }
@@ -1259,7 +1303,7 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     flags6 = data[6];
     flags7 = data[7];
     mapper_id = (uint8_t)((flags6 >> 4) | (flags7 & 0xF0u));
-    if (mapper_id != 0) {
+    if (mapper_id != 0 && mapper_id != 3u) {
         return NES_RESULT_UNSUPPORTED_MAPPER;
     }
 
@@ -1317,6 +1361,9 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
         memcpy(mapper.chr_mem, data + offset, chr_size);
     }
     mapper.chr_mem_size = chr_size;
+    if (mapper_id == 3u) {
+        nes_mapper3_init(&mapper);
+    }
 
     nes_mapper_clear(&nes->mapper);
     nes->rom = info;

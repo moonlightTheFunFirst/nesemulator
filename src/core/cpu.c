@@ -274,6 +274,15 @@ static void cpu_service_nmi(NesEmu *nes)
     nes->cpu.pc = cpu_read16(nes, 0xFFFAu);
 }
 
+static void cpu_service_irq(NesEmu *nes)
+{
+    cpu_push(nes, (uint8_t)(nes->cpu.pc >> 8));
+    cpu_push(nes, (uint8_t)nes->cpu.pc);
+    cpu_push(nes, (uint8_t)((nes->cpu.p & (uint8_t)~CPU_B) | CPU_U));
+    cpu_set_flag(nes, CPU_I, 1);
+    nes->cpu.pc = cpu_read16(nes, 0xFFFEu);
+}
+
 int nes_cpu_step(NesEmu *nes)
 {
     uint8_t opcode;
@@ -291,6 +300,10 @@ int nes_cpu_step(NesEmu *nes)
     }
     if (nes->cpu.nmi_delay > 0) {
         nes->cpu.nmi_delay--;
+    }
+    if (nes->cpu.irq_pending && !cpu_get_flag(nes, CPU_I)) {
+        cpu_service_irq(nes);
+        return 7;
     }
 
     opcode = cpu_fetch8(nes);

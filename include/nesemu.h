@@ -58,6 +58,7 @@ typedef struct NesMapper {
     uint8_t *chr_mem;
     size_t chr_mem_size;
     uint8_t chr_is_ram;
+    uint8_t chr_bank;
     uint8_t prg_ram[NESEMU_PRG_RAM_SIZE];
 } NesMapper;
 
@@ -71,6 +72,7 @@ typedef struct NesCpu {
     uint64_t cycles;
     int nmi_pending;
     int nmi_delay;
+    int irq_pending;
     int extra_cycles;
     int io_write_delay;
     int stopped;
@@ -126,6 +128,8 @@ typedef struct NesApu {
     uint8_t triangle_linear_counter;
     uint8_t triangle_linear_reload;
     uint8_t frame_half_step;
+    uint8_t frame_step;
+    uint8_t frame_irq;
     double frame_counter_accumulator;
     double sample_accumulator;
     size_t sample_read_pos;

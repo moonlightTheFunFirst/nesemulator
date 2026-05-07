@@ -5,6 +5,7 @@
 #include <string.h>
 
 #define TEST_ROM_SIZE (16u + NESEMU_PRG_BANK_SIZE + NESEMU_CHR_BANK_SIZE)
+#define TEST_MAPPER3_ROM_SIZE (16u + NESEMU_PRG_BANK_SIZE * 2u + NESEMU_CHR_BANK_SIZE * 4u)
 
 static int expect_int(const char *name, int actual, int expected)
 {
@@ -53,6 +54,53 @@ static int test_mapper0_load_and_map(void)
     ok &= expect_int("button on", nes_get_button(&nes, NES_BUTTON_A), 1);
     nes_set_button(&nes, NES_BUTTON_A, 0);
     ok &= expect_int("button off", nes_get_button(&nes, NES_BUTTON_A), 0);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper3_chr_bank_switch(void)
+{
+    uint8_t rom[TEST_MAPPER3_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t chr_offset = 16u + NESEMU_PRG_BANK_SIZE * 2u;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int bank;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 2;
+    rom[5] = 4;
+    rom[6] = 0x30;
+    rom[7] = 0;
+    rom[prg_offset] = 0xA5;
+    rom[prg_offset + 0x4000] = 0x5A;
+    rom[prg_offset + 0x7FFC] = 0x00;
+    rom[prg_offset + 0x7FFD] = 0x80;
+    for (bank = 0; bank < 4; ++bank) {
+        rom[chr_offset + (size_t)bank * NESEMU_CHR_BANK_SIZE] = (uint8_t)(0x10 + bank);
+        rom[chr_offset + (size_t)bank * NESEMU_CHR_BANK_SIZE + 0x1FFFu] = (uint8_t)(0x80 + bank);
+    }
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper3", result, NES_RESULT_OK);
+    ok &= expect_int("mapper3 id", nes.rom.mapper_id, 3);
+    ok &= expect_int("mapper3 cpu read 8000", nes_cpu_read(&nes, 0x8000), 0xA5);
+    ok &= expect_int("mapper3 cpu read C000", nes_cpu_read(&nes, 0xC000), 0x5A);
+    ok &= expect_int("mapper3 initial chr", nes_ppu_read(&nes, 0x0000), 0x10);
+    nes_cpu_write(&nes, 0x8000, 2);
+    ok &= expect_int("mapper3 selected bank", nes.mapper.chr_bank, 2);
+    ok &= expect_int("mapper3 chr bank 2 start", nes_ppu_read(&nes, 0x0000), 0x12);
+    ok &= expect_int("mapper3 chr bank 2 end", nes_ppu_read(&nes, 0x1FFF), 0x82);
+    nes_cpu_write(&nes, 0x8000, 3);
+    nes_ppu_write(&nes, 0x0000, 0xEE);
+    ok &= expect_int("mapper3 chr rom ignores writes", nes_ppu_read(&nes, 0x0000), 0x13);
 
     nes_shutdown(&nes);
     return ok;
@@ -704,6 +752,53 @@ static int test_apu_envelope_and_linear_counters(void)
     return ok;
 }
 
+static int test_apu_frame_irq_drives_irq_vector(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int frame;
+    uint8_t program[] = {
+        0x58,             /* CLI */
+        0xA9, 0x00,       /* LDA #$00 */
+        0x8D, 0x17, 0x40, /* STA $4017: 4-step frame IRQ enabled */
+        0x4C, 0x06, 0x80  /* JMP $8006 */
+    };
+    uint8_t irq_handler[] = {
+        0xAD, 0x15, 0x40, /* LDA $4015: acknowledge frame IRQ */
+        0xE6, 0x20,       /* INC $20 */
+        0x40              /* RTI */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    memcpy(&rom[16 + 0x0100], irq_handler, sizeof(irq_handler));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+    rom[16 + 0x3FFE] = 0x00;
+    rom[16 + 0x3FFF] = 0x81;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load apu irq rom", result, NES_RESULT_OK);
+    for (frame = 0; frame < 8; ++frame) {
+        nes_run_frame(&nes);
+    }
+    ok &= expect_int("apu frame irq reached handler", nes_cpu_read(&nes, 0x0020) != 0, 1);
+    ok &= expect_int("apu frame irq acknowledged", nes.apu.frame_irq, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_dmc_playback_progresses(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -885,6 +980,7 @@ int main(int argc, char **argv)
     int i;
 
     ok &= test_mapper0_load_and_map();
+    ok &= test_mapper3_chr_bank_switch();
     ok &= test_cpu_executes_program();
     ok &= test_ora_opcodes();
     ok &= test_joypad_shift();
@@ -900,6 +996,7 @@ int main(int argc, char **argv)
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();
+    ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_dmc_playback_progresses();
     ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
