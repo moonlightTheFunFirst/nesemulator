@@ -1,0 +1,9 @@
+build/
+build-*/
+*.exe
+*.obj
+*.o
+*.ilk
+*.pdb
+*.user
+rom/
