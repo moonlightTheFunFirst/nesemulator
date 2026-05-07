@@ -68,6 +68,17 @@ typedef struct NesMapper {
     uint8_t mapper4_irq_reload;
     uint8_t mapper4_irq_enabled;
     uint8_t mapper4_irq_pending;
+    uint8_t mapper19_chr_regs[12];
+    uint8_t mapper19_prg_regs[3];
+    uint8_t mapper19_e800;
+    uint8_t mapper19_f800;
+    uint16_t mapper19_irq_counter;
+    uint8_t mapper19_irq_enabled;
+    uint8_t mapper19_irq_pending;
+    uint8_t mapper19_ram_addr;
+    uint8_t mapper19_ram_auto_increment;
+    uint8_t mapper19_sound_disabled;
+    uint8_t mapper19_internal_ram[128];
     uint8_t prg_ram[NESEMU_PRG_RAM_SIZE];
 } NesMapper;
 

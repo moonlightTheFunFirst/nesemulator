@@ -10,6 +10,10 @@
 #define TEST_MAPPER4_CHR_BANKS 2u
 #define TEST_MAPPER4_ROM_SIZE \
     (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER4_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER4_CHR_BANKS)
+#define TEST_MAPPER19_PRG_BANKS 4u
+#define TEST_MAPPER19_CHR_BANKS 2u
+#define TEST_MAPPER19_ROM_SIZE \
+    (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER19_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER19_CHR_BANKS)
 
 static int expect_int(const char *name, int actual, int expected)
 {
@@ -198,6 +202,124 @@ static int test_mapper4_bank_switch_and_irq(void)
     nes_run_frame(&nes);
     ok &= expect_int("mapper4 scanline irq reached handler", nes_cpu_read(&nes, 0x0020), 1);
     ok &= expect_int("mapper4 irq acknowledged", nes.mapper.mapper4_irq_pending, 0);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper19_bank_switch_nt_and_irq(void)
+{
+    uint8_t rom[TEST_MAPPER19_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_size = NESEMU_PRG_BANK_SIZE * TEST_MAPPER19_PRG_BANKS;
+    size_t chr_offset = 16u + prg_size;
+    size_t prg_8k_banks = TEST_MAPPER19_PRG_BANKS * 2u;
+    size_t chr_1k_banks = TEST_MAPPER19_CHR_BANKS * 8u;
+    size_t fixed_offset = prg_offset + (prg_8k_banks - 1u) * 0x2000u;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    size_t bank;
+    uint8_t program[] = {
+        0x58,                   /* CLI */
+        0xA9, 0xFC,             /* LDA #$FC */
+        0x8D, 0x00, 0x50,       /* STA $5000: IRQ counter low */
+        0xA9, 0xFF,             /* LDA #$FF */
+        0x8D, 0x00, 0x58,       /* STA $5800: IRQ high and enable */
+        0x4C, 0x0B, 0xE0        /* JMP $E00B */
+    };
+    uint8_t irq_handler[] = {
+        0xA9, 0x00,             /* LDA #$00 */
+        0x8D, 0x00, 0x58,       /* STA $5800: disable/ack IRQ */
+        0xE6, 0x20,             /* INC $20 */
+        0x40                    /* RTI */
+    };
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER19_PRG_BANKS;
+    rom[5] = TEST_MAPPER19_CHR_BANKS;
+    rom[6] = 0x30;
+    rom[7] = 0x10;
+
+    for (bank = 0; bank < prg_8k_banks; ++bank) {
+        rom[prg_offset + bank * 0x2000u] = (uint8_t)(0x80u + bank);
+    }
+    for (bank = 0; bank < chr_1k_banks; ++bank) {
+        rom[chr_offset + bank * 0x0400u] = (uint8_t)(0x10u + bank);
+        rom[chr_offset + bank * 0x0400u + 0x03FFu] = (uint8_t)(0x40u + bank);
+    }
+    memcpy(&rom[fixed_offset], program, sizeof(program));
+    memcpy(&rom[fixed_offset + 0x0100u], irq_handler, sizeof(irq_handler));
+    rom[fixed_offset + 0x1FFAu] = 0x00;
+    rom[fixed_offset + 0x1FFBu] = 0xE1;
+    rom[fixed_offset + 0x1FFCu] = 0x00;
+    rom[fixed_offset + 0x1FFDu] = 0xE0;
+    rom[fixed_offset + 0x1FFEu] = 0x00;
+    rom[fixed_offset + 0x1FFFu] = 0xE1;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper19", result, NES_RESULT_OK);
+    ok &= expect_int("mapper19 id", nes.rom.mapper_id, 19);
+    ok &= expect_int("mapper19 initial 8000", nes_cpu_read(&nes, 0x8000), 0x80);
+    ok &= expect_int("mapper19 initial A000", nes_cpu_read(&nes, 0xA000), 0x81);
+    ok &= expect_int("mapper19 initial C000", nes_cpu_read(&nes, 0xC000), 0x82);
+    ok &= expect_int("mapper19 fixed E000", nes_cpu_read(&nes, 0xE000), 0x58);
+
+    nes_cpu_write(&nes, 0xE000, 3);
+    ok &= expect_int("mapper19 prg 8000 bank", nes_cpu_read(&nes, 0x8000), 0x83);
+    nes_cpu_write(&nes, 0xE800, 4);
+    ok &= expect_int("mapper19 prg A000 bank", nes_cpu_read(&nes, 0xA000), 0x84);
+    nes_cpu_write(&nes, 0xF000, 5);
+    ok &= expect_int("mapper19 prg C000 bank", nes_cpu_read(&nes, 0xC000), 0x85);
+
+    nes_cpu_write(&nes, 0x8000, 4);
+    ok &= expect_int("mapper19 chr low bank", nes_ppu_read(&nes, 0x0000), 0x14);
+    ok &= expect_int("mapper19 chr low bank end", nes_ppu_read(&nes, 0x03FF), 0x44);
+    nes_cpu_write(&nes, 0xA000, 5);
+    ok &= expect_int("mapper19 chr high bank", nes_ppu_read(&nes, 0x1000), 0x15);
+
+    nes.ppu.nametable[0] = 0xAAu;
+    nes_cpu_write(&nes, 0x8000, 0xE0);
+    ok &= expect_int("mapper19 low chr can select nt ram", nes_ppu_read(&nes, 0x0000), 0xAA);
+    nes_ppu_write(&nes, 0x0000, 0xCC);
+    ok &= expect_int("mapper19 low chr nt ram write", nes.ppu.nametable[0], 0xCC);
+    nes_cpu_write(&nes, 0xE800, 0x40);
+    ok &= expect_int("mapper19 e800 can force low chr rom", nes_ppu_read(&nes, 0x0000), 0x10);
+
+    nes.ppu.nametable[0] = 0x11u;
+    nes.ppu.nametable[0x400] = 0x22u;
+    nes_cpu_write(&nes, 0xC000, 0xE0);
+    nes_cpu_write(&nes, 0xC800, 0xE1);
+    ok &= expect_int("mapper19 nt bank A", nes_ppu_read(&nes, 0x2000), 0x11);
+    ok &= expect_int("mapper19 nt bank B", nes_ppu_read(&nes, 0x2400), 0x22);
+    nes_ppu_write(&nes, 0x2400, 0x33);
+    ok &= expect_int("mapper19 nt bank write", nes.ppu.nametable[0x400], 0x33);
+
+    nes_cpu_write(&nes, 0xF800, 0x80);
+    nes_cpu_write(&nes, 0x4800, 0x5A);
+    nes_cpu_write(&nes, 0x4800, 0xA5);
+    nes_cpu_write(&nes, 0xF800, 0x80);
+    ok &= expect_int("mapper19 chip ram read 0", nes_cpu_read(&nes, 0x4800), 0x5A);
+    ok &= expect_int("mapper19 chip ram read 1", nes_cpu_read(&nes, 0x4800), 0xA5);
+
+    nes_cpu_write(&nes, 0x6000, 0x77);
+    ok &= expect_int("mapper19 prg ram protected", nes_cpu_read(&nes, 0x6000), 0);
+    nes_cpu_write(&nes, 0xF800, 0x40);
+    nes_cpu_write(&nes, 0x6000, 0x77);
+    ok &= expect_int("mapper19 prg ram write enabled", nes_cpu_read(&nes, 0x6000), 0x77);
+    nes_cpu_write(&nes, 0xF800, 0x41);
+    nes_cpu_write(&nes, 0x6000, 0x55);
+    ok &= expect_int("mapper19 prg ram window protected", nes_cpu_read(&nes, 0x6000), 0x77);
+
+    nes_reset(&nes);
+    nes_run_frame(&nes);
+    ok &= expect_int("mapper19 cpu irq reached handler", nes_cpu_read(&nes, 0x0020), 1);
+    ok &= expect_int("mapper19 irq acknowledged", nes.mapper.mapper19_irq_pending, 0);
 
     nes_shutdown(&nes);
     return ok;
@@ -1226,6 +1348,7 @@ int main(int argc, char **argv)
     ok &= test_mapper0_load_and_map();
     ok &= test_mapper3_chr_bank_switch();
     ok &= test_mapper4_bank_switch_and_irq();
+    ok &= test_mapper19_bank_switch_nt_and_irq();
     ok &= test_cpu_executes_program();
     ok &= test_ora_opcodes();
     ok &= test_joypad_shift();

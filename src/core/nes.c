@@ -2,6 +2,7 @@
 #include "apu.h"
 #include "mapper/mapper3.h"
 #include "mapper/mapper4.h"
+#include "mapper/mapper19.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -58,7 +59,9 @@ void nes_update_irq(NesEmu *nes)
     if (nes == NULL) {
         return;
     }
-    mapper_irq = nes->rom_loaded && nes->rom.mapper_id == 4u && nes->mapper.mapper4_irq_pending;
+    mapper_irq = nes->rom_loaded &&
+                 ((nes->rom.mapper_id == 4u && nes->mapper.mapper4_irq_pending) ||
+                  (nes->rom.mapper_id == 19u && nes->mapper.mapper19_irq_pending));
     nes->cpu.irq_pending = (nes->apu.frame_irq != 0) || (nes->apu.dmc_irq != 0) || mapper_irq;
 }
 
@@ -118,6 +121,9 @@ uint8_t nes_ppu_read(const NesEmu *nes, uint16_t address)
         if (!nes->rom_loaded || nes->mapper.chr_mem_size == 0) {
             return 0xFFu;
         }
+        if (nes->rom.mapper_id == 19u) {
+            return nes_mapper19_ppu_read(nes, address);
+        }
         if (nes->rom.mapper_id == 3u) {
             return nes_mapper3_chr_read(&nes->mapper, address);
         }
@@ -127,6 +133,9 @@ uint8_t nes_ppu_read(const NesEmu *nes, uint16_t address)
         return nes->mapper.chr_mem[address % nes->mapper.chr_mem_size];
     }
     if (address < 0x3F00u) {
+        if (nes->rom_loaded && nes->rom.mapper_id == 19u) {
+            return nes_mapper19_ppu_read(nes, address);
+        }
         return nes->ppu.nametable[nametable_index(nes, address)];
     }
     return palette_read(&nes->ppu, address);
@@ -136,6 +145,10 @@ void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     address &= 0x3FFFu;
     if (address < 0x2000u) {
+        if (nes->rom_loaded && nes->rom.mapper_id == 19u) {
+            nes_mapper19_ppu_write(nes, address, value);
+            return;
+        }
         if (nes->rom_loaded && nes->rom.mapper_id == 3u) {
             nes_mapper3_chr_write(&nes->mapper, address, value);
             return;
@@ -150,6 +163,10 @@ void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
         return;
     }
     if (address < 0x3F00u) {
+        if (nes->rom_loaded && nes->rom.mapper_id == 19u) {
+            nes_mapper19_ppu_write(nes, address, value);
+            return;
+        }
         nes->ppu.nametable[nametable_index(nes, address)] = value;
         return;
     }
@@ -332,10 +349,16 @@ uint8_t nes_cpu_bus_read(NesEmu *nes, uint16_t address)
     if (address == 0x4017u) {
         return joypad_read(&nes->joypad2);
     }
+    if (nes->rom.mapper_id == 19u && address >= 0x4800u && address <= 0x5FFFu) {
+        return nes_mapper19_cpu_read(nes, address);
+    }
     if (address >= 0x6000u && address <= 0x7FFFu) {
         return nes->mapper.prg_ram[address - 0x6000u];
     }
     if (address >= 0x8000u && nes->mapper.prg_rom_size > 0) {
+        if (nes->rom.mapper_id == 19u) {
+            return nes_mapper19_cpu_read(nes, address);
+        }
         if (nes->rom.mapper_id == 3u) {
             return nes_mapper3_prg_read(&nes->mapper, address);
         }
@@ -420,7 +443,14 @@ void nes_cpu_bus_write(NesEmu *nes, uint16_t address, uint8_t value)
         joypad_write_strobe(nes, value);
         return;
     }
+    if (nes->rom.mapper_id == 19u && address >= 0x4800u && address <= 0x5FFFu) {
+        nes_mapper19_cpu_write(nes, address, value);
+        return;
+    }
     if (address >= 0x6000u && address <= 0x7FFFu) {
+        if (nes->rom.mapper_id == 19u && !nes_mapper19_prg_ram_write_enabled(&nes->mapper, address)) {
+            return;
+        }
         nes->mapper.prg_ram[address - 0x6000u] = value;
         return;
     }
@@ -430,6 +460,10 @@ void nes_cpu_bus_write(NesEmu *nes, uint16_t address, uint8_t value)
     }
     if (address >= 0x8000u && nes->rom.mapper_id == 4u) {
         nes_mapper4_prg_write(nes, address, value);
+        return;
+    }
+    if (address >= 0x8000u && nes->rom.mapper_id == 19u) {
+        nes_mapper19_cpu_write(nes, address, value);
     }
 }
 
@@ -798,6 +832,9 @@ static void ppu_step(NesEmu *nes, int ppu_cycles)
 static void clock_cpu_cycles(NesEmu *nes, int cycles)
 {
     nes->cpu.cycles += (uint64_t)cycles;
+    if (nes->rom.mapper_id == 19u) {
+        nes_mapper19_clock_irq(nes, cycles);
+    }
     nes_apu_clock_frame_counter(nes, cycles);
     ppu_step(nes, cycles * 3);
     nes_apu_clock_audio(nes, cycles);
@@ -896,7 +933,7 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     flags6 = data[6];
     flags7 = data[7];
     mapper_id = (uint8_t)((flags6 >> 4) | (flags7 & 0xF0u));
-    if (mapper_id != 0 && mapper_id != 3u && mapper_id != 4u) {
+    if (mapper_id != 0 && mapper_id != 3u && mapper_id != 4u && mapper_id != 19u) {
         return NES_RESULT_UNSUPPORTED_MAPPER;
     }
 
@@ -958,6 +995,8 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
         nes_mapper3_init(&mapper);
     } else if (mapper_id == 4u) {
         nes_mapper4_init(&mapper);
+    } else if (mapper_id == 19u) {
+        nes_mapper19_init(&mapper);
     }
 
     nes_mapper_clear(&nes->mapper);
