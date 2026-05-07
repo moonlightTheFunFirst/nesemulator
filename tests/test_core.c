@@ -46,6 +46,8 @@ static int audio_has_signal(const int16_t *samples, size_t count)
     return 0;
 }
 
+void nes_apu_clock_frame_counter(NesEmu *nes, int cycles);
+
 static int test_mapper0_load_and_map(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1146,6 +1148,43 @@ static int test_apu_frame_irq_drives_irq_vector(void)
     return ok;
 }
 
+static int test_apu_frame_counter_event_timing(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load apu frame timing rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4017, 0x00);
+    nes_apu_clock_frame_counter(&nes, 29828);
+    ok &= expect_int("frame irq before event", nes.apu.frame_irq, 0);
+    nes_apu_clock_frame_counter(&nes, 1);
+    ok &= expect_int("frame irq at event", nes.apu.frame_irq, 1);
+    ok &= expect_int("frame irq status bit", nes_cpu_read(&nes, 0x4015) & 0x40, 0x40);
+    ok &= expect_int("frame irq acknowledged by status read", nes.apu.frame_irq, 0);
+
+    nes_cpu_write(&nes, 0x4017, 0xC0);
+    nes_apu_clock_frame_counter(&nes, 37282 * 2);
+    ok &= expect_int("5-step frame irq inhibited", nes.apu.frame_irq, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_dmc_playback_progresses(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1236,6 +1275,52 @@ static int test_dmc_irq_status_and_acknowledge(void)
     nes_cpu_write(&nes, 0x4015, 0x10);
     ok &= expect_int("dmc irq cleared by status write", nes.apu.dmc_irq, 0);
     ok &= expect_int("dmc irq line cleared", nes.cpu.irq_pending, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_apu_timer_sequences_drive_channels(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    int16_t samples[512];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load apu timer rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4017, 0xC0);
+    nes_cpu_write(&nes, 0x4015, 0x0F);
+    nes_cpu_write(&nes, 0x4000, 0x3F);
+    nes_cpu_write(&nes, 0x4002, 0x20);
+    nes_cpu_write(&nes, 0x4003, 0x08);
+    nes_cpu_write(&nes, 0x4008, 0xFF);
+    nes_cpu_write(&nes, 0x400A, 0x08);
+    nes_cpu_write(&nes, 0x400B, 0x08);
+    nes_cpu_write(&nes, 0x400C, 0x1F);
+    nes_cpu_write(&nes, 0x400E, 0x00);
+    nes_cpu_write(&nes, 0x400F, 0x08);
+    nes_run_frame(&nes);
+    nes_render_audio(&nes, samples, sizeof(samples) / sizeof(samples[0]), NESEMU_AUDIO_RATE);
+    ok &= expect_int("pulse sequencer advanced", nes.apu.pulse_sequence_step[0] != 0, 1);
+    ok &= expect_int("triangle sequencer advanced", nes.apu.triangle_sequence_step != 0, 1);
+    ok &= expect_int("noise lfsr advanced", nes.apu.noise_lfsr != 1, 1);
+    ok &= expect_int("timer channels produced sample",
+                     audio_has_signal(samples, sizeof(samples) / sizeof(samples[0])),
+                     1);
     nes_shutdown(&nes);
     return ok;
 }
@@ -1453,8 +1538,10 @@ int main(int argc, char **argv)
     ok &= test_apu_envelope_and_linear_counters();
     ok &= test_pulse_sweep_updates_timer();
     ok &= test_apu_frame_irq_drives_irq_vector();
+    ok &= test_apu_frame_counter_event_timing();
     ok &= test_dmc_playback_progresses();
     ok &= test_dmc_irq_status_and_acknowledge();
+    ok &= test_apu_timer_sequences_drive_channels();
     ok &= test_mapper19_n163_audio();
     ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
