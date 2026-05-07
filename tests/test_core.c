@@ -911,6 +911,44 @@ static int test_apu_envelope_and_linear_counters(void)
     return ok;
 }
 
+static int test_pulse_sweep_updates_timer(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load pulse sweep rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4015, 0x01);
+    nes_cpu_write(&nes, 0x4002, 0x00);
+    nes_cpu_write(&nes, 0x4003, 0x09);
+    nes_cpu_write(&nes, 0x4001, 0x81);
+    nes_cpu_write(&nes, 0x4017, 0x80);
+    ok &= expect_int("pulse positive sweep low", nes.apu.regs[2], 0x80);
+    ok &= expect_int("pulse positive sweep high", nes.apu.regs[3] & 0x07, 0x01);
+
+    nes_cpu_write(&nes, 0x4002, 0x00);
+    nes_cpu_write(&nes, 0x4003, 0x09);
+    nes_cpu_write(&nes, 0x4001, 0x89);
+    nes_cpu_write(&nes, 0x4017, 0x80);
+    ok &= expect_int("pulse channel 1 negative sweep low", nes.apu.regs[2], 0x7F);
+    ok &= expect_int("pulse channel 1 negative sweep high", nes.apu.regs[3] & 0x07, 0x00);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_apu_frame_irq_drives_irq_vector(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1204,6 +1242,7 @@ int main(int argc, char **argv)
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();
+    ok &= test_pulse_sweep_updates_timer();
     ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_dmc_playback_progresses();
     ok &= test_dmc_irq_status_and_acknowledge();

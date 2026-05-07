@@ -118,6 +118,8 @@ typedef struct NesApu {
     uint8_t regs[0x18];
     uint8_t status;
     double pulse_phase[2];
+    uint8_t pulse_sweep_divider[2];
+    uint8_t pulse_sweep_reload[2];
     double triangle_phase;
     double noise_phase;
     uint16_t noise_lfsr;

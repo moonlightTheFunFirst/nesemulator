@@ -9,7 +9,9 @@ enum {
 
 static void apu_clock_length_counters(NesApu *apu);
 static void apu_clock_quarter_frame(NesApu *apu);
+static void apu_clock_sweeps(NesApu *apu);
 static void apu_clock_dmc(NesEmu *nes, int cycles);
+static int pulse_sweep_mutes(const NesApu *apu, int channel);
 
 void nes_apu_init(NesApu *apu)
 {
@@ -75,17 +77,25 @@ void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
     case 0x4013u:
         nes->apu.dmc_sample_length = (uint16_t)(((uint16_t)value << 4) | 1u);
         break;
+    case 0x4001u:
+        nes->apu.pulse_sweep_reload[0] = 1;
+        break;
+    case 0x4005u:
+        nes->apu.pulse_sweep_reload[1] = 1;
+        break;
     case 0x4003u:
         if ((nes->apu.status & 0x01u) != 0) {
             nes->apu.length_counter[0] = apu_length_table[value >> 3];
         }
         nes->apu.envelope_start[0] = 1;
+        nes->apu.pulse_phase[0] = 0.0;
         break;
     case 0x4007u:
         if ((nes->apu.status & 0x02u) != 0) {
             nes->apu.length_counter[1] = apu_length_table[value >> 3];
         }
         nes->apu.envelope_start[1] = 1;
+        nes->apu.pulse_phase[1] = 0.0;
         break;
     case 0x400Bu:
         if ((nes->apu.status & 0x04u) != 0) {
@@ -132,6 +142,7 @@ void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         if ((value & 0x80u) != 0) {
             apu_clock_quarter_frame(&nes->apu);
             apu_clock_length_counters(&nes->apu);
+            apu_clock_sweeps(&nes->apu);
         }
         break;
     default:
@@ -253,11 +264,13 @@ void nes_apu_clock_frame_counter(NesEmu *nes, int cycles)
         if ((apu->regs[0x17] & 0x80u) != 0) {
             if (apu->frame_step == 1u || apu->frame_step == 4u) {
                 apu_clock_length_counters(apu);
+                apu_clock_sweeps(apu);
             }
             apu->frame_step = (uint8_t)((apu->frame_step + 1u) % 5u);
         } else {
             if (apu->frame_step == 1u || apu->frame_step == 3u) {
                 apu_clock_length_counters(apu);
+                apu_clock_sweeps(apu);
             }
             if (apu->frame_step == 3u && (apu->regs[0x17] & 0x40u) == 0) {
                 apu->frame_irq = 1;
@@ -280,7 +293,7 @@ static double pulse_sample(NesApu *apu, int channel, int sample_rate)
     static const double duty_ratio[4] = { 0.125, 0.25, 0.5, 0.75 };
     double freq;
 
-    if (!enabled || apu->length_counter[channel] == 0 || timer < 8 || volume == 0) {
+    if (!enabled || apu->length_counter[channel] == 0 || pulse_sweep_mutes(apu, channel) || volume == 0) {
         return 0.0;
     }
     freq = (double)CPU_CLOCK_NTSC / (16.0 * (double)(timer + 1));
@@ -289,6 +302,81 @@ static double pulse_sample(NesApu *apu, int channel, int sample_rate)
         apu->pulse_phase[channel] -= 1.0;
     }
     return apu->pulse_phase[channel] < duty_ratio[duty] ? (double)volume : 0.0;
+}
+
+static int pulse_timer(const NesApu *apu, int channel)
+{
+    int index = channel ? 4 : 0;
+
+    return apu->regs[index + 2] | ((apu->regs[index + 3] & 0x07) << 8);
+}
+
+static void pulse_set_timer(NesApu *apu, int channel, int timer)
+{
+    int index = channel ? 4 : 0;
+
+    timer &= 0x07FF;
+    apu->regs[index + 2] = (uint8_t)(timer & 0xFF);
+    apu->regs[index + 3] = (uint8_t)((apu->regs[index + 3] & 0xF8u) | ((uint8_t)(timer >> 8) & 0x07u));
+}
+
+static int pulse_sweep_target(const NesApu *apu, int channel)
+{
+    int index = channel ? 4 : 0;
+    uint8_t reg = apu->regs[index + 1];
+    int timer = pulse_timer(apu, channel);
+    int change = timer >> (reg & 0x07u);
+
+    if ((reg & 0x08u) != 0) {
+        timer -= change;
+        if (channel == 0) {
+            timer--;
+        }
+    } else {
+        timer += change;
+    }
+    return timer;
+}
+
+static int pulse_sweep_mutes(const NesApu *apu, int channel)
+{
+    int index = channel ? 4 : 0;
+    uint8_t reg = apu->regs[index + 1];
+
+    if (pulse_timer(apu, channel) < 8) {
+        return 1;
+    }
+    if ((reg & 0x80u) != 0 && (reg & 0x07u) != 0 && pulse_sweep_target(apu, channel) > 0x07FF) {
+        return 1;
+    }
+    return 0;
+}
+
+static void apu_clock_sweep(NesApu *apu, int channel)
+{
+    int index = channel ? 4 : 0;
+    uint8_t reg = apu->regs[index + 1];
+    uint8_t period = (uint8_t)((reg >> 4) & 0x07u);
+    int divider_zero = apu->pulse_sweep_divider[channel] == 0;
+
+    if (divider_zero) {
+        if ((reg & 0x80u) != 0 && (reg & 0x07u) != 0 && !pulse_sweep_mutes(apu, channel)) {
+            pulse_set_timer(apu, channel, pulse_sweep_target(apu, channel));
+        }
+        apu->pulse_sweep_divider[channel] = period;
+    } else {
+        apu->pulse_sweep_divider[channel]--;
+    }
+    if (apu->pulse_sweep_reload[channel]) {
+        apu->pulse_sweep_divider[channel] = period;
+        apu->pulse_sweep_reload[channel] = 0;
+    }
+}
+
+static void apu_clock_sweeps(NesApu *apu)
+{
+    apu_clock_sweep(apu, 0);
+    apu_clock_sweep(apu, 1);
 }
 
 static double triangle_sample(NesApu *apu, int sample_rate)
