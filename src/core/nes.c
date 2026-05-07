@@ -11,6 +11,7 @@ enum {
     PPU_CYCLES_PER_SCANLINE = 341,
     PPU_SCANLINES_PER_FRAME = 262,
     PPU_CYCLES_PER_FRAME = PPU_CYCLES_PER_SCANLINE * PPU_SCANLINES_PER_FRAME,
+    PPU_SCANLINE_RENDER_CYCLE = 16,
     PPU_VBLANK_EVENT = PPU_CYCLES_PER_SCANLINE * 241 + 1,
     PPU_PRERENDER_EVENT = PPU_CYCLES_PER_SCANLINE * 261 + 1
 };
@@ -284,11 +285,19 @@ static void ppu_apply_pending_write(NesEmu *nes)
     ppu_write_register(nes, nes->ppu.pending_write_address, nes->ppu.pending_write_value);
 }
 
+static int ppu_is_visible_rendering(const NesPpu *ppu)
+{
+    return (ppu->mask & 0x18u) != 0 && ppu->scanline >= 0 && ppu->scanline < 240;
+}
+
 static void ppu_schedule_register_write(NesEmu *nes, uint16_t address, uint8_t value, int cpu_cycles)
 {
     int position;
 
-    if (cpu_cycles <= 0) {
+    if (cpu_cycles <= 0 || !ppu_is_visible_rendering(&nes->ppu)) {
+        if (nes->ppu.pending_write) {
+            ppu_apply_pending_write(nes);
+        }
         ppu_write_register(nes, address, value);
         return;
     }
@@ -1954,12 +1963,18 @@ static void render_background_scanline(NesEmu *nes, int y, uint8_t *bg_opaque)
 
 static void ppu_schedule_sprite0_hit(NesEmu *nes, int y, int x)
 {
+    int current;
     int position;
 
     if ((nes->ppu.status & 0x40u) != 0 || x < 0 || x >= 255) {
         return;
     }
+    current = nes->ppu.scanline * PPU_CYCLES_PER_SCANLINE + nes->ppu.cycle;
     position = y * PPU_CYCLES_PER_SCANLINE + x + 1;
+    if (position <= current) {
+        nes->ppu.status |= 0x40u;
+        return;
+    }
     if (nes->ppu.sprite0_hit_position < 0 || position < nes->ppu.sprite0_hit_position) {
         nes->ppu.sprite0_hit_position = position;
     }
@@ -2063,10 +2078,14 @@ static void ppu_set_position(NesPpu *ppu, int position)
 static int ppu_next_event_after(const NesPpu *ppu, int position)
 {
     int next = PPU_CYCLES_PER_FRAME;
-    int next_scanline = position / PPU_CYCLES_PER_SCANLINE + 1;
+    int scanline = position / PPU_CYCLES_PER_SCANLINE;
+    int cycle = position % PPU_CYCLES_PER_SCANLINE;
+    int next_scanline = scanline + 1;
 
-    if (next_scanline < 240) {
-        next = next_scanline * PPU_CYCLES_PER_SCANLINE;
+    if (scanline < 240 && cycle < PPU_SCANLINE_RENDER_CYCLE) {
+        next = scanline * PPU_CYCLES_PER_SCANLINE + PPU_SCANLINE_RENDER_CYCLE;
+    } else if (next_scanline < 240) {
+        next = next_scanline * PPU_CYCLES_PER_SCANLINE + PPU_SCANLINE_RENDER_CYCLE;
     }
     if (position < PPU_VBLANK_EVENT && PPU_VBLANK_EVENT < next) {
         next = PPU_VBLANK_EVENT;
@@ -2096,7 +2115,8 @@ static void ppu_process_current_cycle(NesEmu *nes)
         nes->ppu.status |= 0x40u;
         nes->ppu.sprite0_hit_position = -1;
     }
-    if (nes->ppu.cycle == 0 && nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
+    if (nes->ppu.cycle == PPU_SCANLINE_RENDER_CYCLE &&
+        nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
         render_scanline(nes, nes->ppu.scanline);
         if (nes->ppu.scanline == 239 && (nes->ppu.mask & 0x18u) == 0x18u) {
             ppu_schedule_sprite0_hit(nes, nes->ppu.scanline, 254);

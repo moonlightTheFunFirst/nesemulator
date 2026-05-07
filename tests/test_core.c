@@ -470,6 +470,53 @@ static int test_oam_dma_cycle_parity(void)
     return ok;
 }
 
+static int test_ppu_delays_writes_only_during_visible_rendering(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int visible_position;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load ppu delay rom", result, NES_RESULT_OK);
+
+    nes.ppu.mask = 0x1Eu;
+    nes.ppu.scanline = 248;
+    nes.ppu.cycle = 300;
+    nes.cpu.io_write_delay = 3;
+    nes_cpu_write(&nes, 0x2006, 0x20);
+    nes_cpu_write(&nes, 0x2006, 0x00);
+    nes_cpu_write(&nes, 0x2007, 0xAA);
+    nes_cpu_write(&nes, 0x2007, 0xBB);
+    ok &= expect_int("vblank ppu write is immediate", nes.ppu.pending_write, 0);
+    ok &= expect_int("vblank ppu write first byte", nes.ppu.nametable[0], 0xAA);
+    ok &= expect_int("vblank ppu write second byte", nes.ppu.nametable[1], 0xBB);
+
+    nes.ppu.scanline = 100;
+    nes.ppu.cycle = 20;
+    nes.cpu.io_write_delay = 3;
+    nes_cpu_write(&nes, 0x2005, 0x12);
+    visible_position = 100 * 341 + 20 + 9;
+    ok &= expect_int("visible ppu write is delayed", nes.ppu.pending_write, 1);
+    ok &= expect_int("visible ppu write position", nes.ppu.pending_write_position, visible_position);
+    ok &= expect_int("visible ppu write not yet applied", nes.ppu.scroll_x, 0);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_unofficial_opcodes(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -766,6 +813,7 @@ int main(int argc, char **argv)
     ok &= test_ppuctrl_nmi_rising_edge();
     ok &= test_vblank_poll_can_suppress_pending_nmi();
     ok &= test_oam_dma_cycle_parity();
+    ok &= test_ppu_delays_writes_only_during_visible_rendering();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();
