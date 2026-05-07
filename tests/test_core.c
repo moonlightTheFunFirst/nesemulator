@@ -128,6 +128,80 @@ static int test_joypad_shift(void)
     return ok;
 }
 
+static int test_unofficial_opcodes(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0xA9, 0x0F,       /* LDA #$0F */
+        0xA2, 0xF0,       /* LDX #$F0 */
+        0x87, 0x20,       /* SAX $20 */
+        0xA9, 0x01,       /* LDA #$01 */
+        0x85, 0x21,       /* STA $21 */
+        0x07, 0x21,       /* SLO $21 */
+        0xA7, 0x21,       /* LAX $21 */
+        0x4C, 0x0E, 0x80  /* JMP $800E */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load unofficial rom", result, NES_RESULT_OK);
+    nes_run_frame(&nes);
+    ok &= expect_int("sax stores a&x", nes_cpu_read(&nes, 0x0020), 0x00);
+    ok &= expect_int("slo shifts memory", nes_cpu_read(&nes, 0x0021), 0x02);
+    ok &= expect_int("lax sets a", nes.cpu.a, 0x02);
+    ok &= expect_int("lax sets x", nes.cpu.x, 0x02);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_apu_length_counter(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int frame;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load apu rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4015, 0x01);
+    nes_cpu_write(&nes, 0x4003, 0x08);
+    ok &= expect_int("apu length active", nes_cpu_read(&nes, 0x4015) & 1, 1);
+    for (frame = 0; frame < 130; ++frame) {
+        nes_run_frame(&nes);
+    }
+    ok &= expect_int("apu length expires", nes_cpu_read(&nes, 0x4015) & 1, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_unsupported_mapper(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -235,6 +309,8 @@ int main(int argc, char **argv)
     ok &= test_mapper0_load_and_map();
     ok &= test_cpu_executes_program();
     ok &= test_joypad_shift();
+    ok &= test_unofficial_opcodes();
+    ok &= test_apu_length_counter();
     ok &= test_unsupported_mapper();
     for (i = 1; i < argc; ++i) {
         ok &= run_rom_smoke_test(argv[i]);

@@ -101,6 +101,7 @@ typedef struct NesApu {
     double triangle_phase;
     double noise_phase;
     uint16_t noise_lfsr;
+    uint8_t length_counter[4];
 } NesApu;
 
 typedef struct NesJoypad {
