@@ -7,7 +7,12 @@
 enum {
     INES_HEADER_SIZE = 16,
     INES_TRAINER_SIZE = 512,
-    CPU_CLOCK_NTSC = 1789773
+    CPU_CLOCK_NTSC = 1789773,
+    PPU_CYCLES_PER_SCANLINE = 341,
+    PPU_SCANLINES_PER_FRAME = 262,
+    PPU_CYCLES_PER_FRAME = PPU_CYCLES_PER_SCANLINE * PPU_SCANLINES_PER_FRAME,
+    PPU_VBLANK_EVENT = PPU_CYCLES_PER_SCANLINE * 241 + 1,
+    PPU_PRERENDER_EVENT = PPU_CYCLES_PER_SCANLINE * 261 + 1
 };
 
 enum {
@@ -1935,32 +1940,72 @@ static void render_scanline(NesEmu *nes, int y)
     }
 }
 
+static int ppu_position(const NesPpu *ppu)
+{
+    return ppu->scanline * PPU_CYCLES_PER_SCANLINE + ppu->cycle;
+}
+
+static void ppu_set_position(NesPpu *ppu, int position)
+{
+    while (position >= PPU_CYCLES_PER_FRAME) {
+        position -= PPU_CYCLES_PER_FRAME;
+        ppu->frame++;
+    }
+    ppu->scanline = position / PPU_CYCLES_PER_SCANLINE;
+    ppu->cycle = position % PPU_CYCLES_PER_SCANLINE;
+}
+
+static int ppu_next_event_after(int position)
+{
+    int next = PPU_CYCLES_PER_FRAME;
+    int next_scanline = position / PPU_CYCLES_PER_SCANLINE + 1;
+
+    if (next_scanline < 240) {
+        next = next_scanline * PPU_CYCLES_PER_SCANLINE;
+    }
+    if (position < PPU_VBLANK_EVENT && PPU_VBLANK_EVENT < next) {
+        next = PPU_VBLANK_EVENT;
+    }
+    if (position < PPU_PRERENDER_EVENT && PPU_PRERENDER_EVENT < next) {
+        next = PPU_PRERENDER_EVENT;
+    }
+    return next;
+}
+
+static void ppu_process_current_cycle(NesEmu *nes)
+{
+    if (nes->ppu.cycle == 0 && nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
+        render_scanline(nes, nes->ppu.scanline);
+    }
+    if (nes->ppu.scanline == 241 && nes->ppu.cycle == 1) {
+        nes->ppu.status |= 0x80u;
+        nes->ppu.frame_ready = 1;
+        if ((nes->ppu.ctrl & 0x80u) != 0) {
+            nes->cpu.nmi_pending = 1;
+        }
+    }
+    if (nes->ppu.scanline == 261 && nes->ppu.cycle == 1) {
+        nes->ppu.status &= (uint8_t)~0xC0u;
+    }
+}
+
 static void ppu_step(NesEmu *nes, int ppu_cycles)
 {
-    while (ppu_cycles-- > 0) {
-        if (nes->ppu.cycle == 0 && nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
-            render_scanline(nes, nes->ppu.scanline);
-        }
-        if (nes->ppu.scanline == 241 && nes->ppu.cycle == 1) {
-            nes->ppu.status |= 0x80u;
-            nes->ppu.frame_ready = 1;
-            if ((nes->ppu.ctrl & 0x80u) != 0) {
-                nes->cpu.nmi_pending = 1;
-            }
-        }
-        if (nes->ppu.scanline == 261 && nes->ppu.cycle == 1) {
-            nes->ppu.status &= (uint8_t)~0xC0u;
-        }
+    while (ppu_cycles > 0) {
+        int position = ppu_position(&nes->ppu);
+        int next_event = ppu_next_event_after(position);
+        int step;
 
-        nes->ppu.cycle++;
-        if (nes->ppu.cycle >= 341) {
-            nes->ppu.cycle = 0;
-            nes->ppu.scanline++;
-            if (nes->ppu.scanline >= 262) {
-                nes->ppu.scanline = 0;
-                nes->ppu.frame++;
-            }
+        ppu_process_current_cycle(nes);
+        step = next_event - position;
+        if (step <= 0) {
+            step = PPU_CYCLES_PER_FRAME - position;
         }
+        if (step > ppu_cycles) {
+            step = ppu_cycles;
+        }
+        ppu_set_position(&nes->ppu, position + step);
+        ppu_cycles -= step;
     }
 }
 

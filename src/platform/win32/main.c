@@ -14,9 +14,10 @@
 
 #define WINDOW_CLASS_NAME L"NESEMUWindow"
 #define WINDOW_TITLE      L"NESEMU"
-#define FRAME_TIMER_ID    1u
 #define AUDIO_BUFFERS     4u
 #define AUDIO_SAMPLES     (NESEMU_AUDIO_RATE / 60u)
+#define NES_FRAME_RATE_NTSC 60.0988138974405
+#define APP_MAX_CATCHUP_FRAMES 3
 
 typedef struct AppState {
     NesEmu nes;
@@ -33,6 +34,10 @@ typedef struct AppState {
     int paint_width;
     int paint_height;
     int reset_key_down;
+    LARGE_INTEGER perf_frequency;
+    LARGE_INTEGER last_counter;
+    double frame_accumulator;
+    int clock_ready;
 } AppState;
 
 static AppState g_app;
@@ -112,6 +117,36 @@ static void app_release_backbuffer(void)
     g_app.old_paint_bitmap = NULL;
     g_app.paint_width = 0;
     g_app.paint_height = 0;
+}
+
+static void app_reset_clock(void)
+{
+    if (!g_app.clock_ready) {
+        QueryPerformanceFrequency(&g_app.perf_frequency);
+        g_app.clock_ready = 1;
+    }
+    QueryPerformanceCounter(&g_app.last_counter);
+    g_app.frame_accumulator = 0.0;
+}
+
+static double app_elapsed_seconds(void)
+{
+    LARGE_INTEGER now;
+    double elapsed;
+
+    if (!g_app.clock_ready) {
+        app_reset_clock();
+    }
+    QueryPerformanceCounter(&now);
+    elapsed = (double)(now.QuadPart - g_app.last_counter.QuadPart) /
+              (double)g_app.perf_frequency.QuadPart;
+    g_app.last_counter = now;
+    if (elapsed < 0.0) {
+        elapsed = 0.0;
+    } else if (elapsed > 0.25) {
+        elapsed = 0.25;
+    }
+    return elapsed;
 }
 
 static HDC app_get_backbuffer(HDC window_dc, int width, int height)
@@ -288,6 +323,7 @@ static void load_rom(HWND hwnd, const WCHAR *path)
     g_app.rom_path[(sizeof(g_app.rom_path) / sizeof(g_app.rom_path[0])) - 1u] = L'\0';
     format_loaded_status(path);
     audio_start();
+    app_reset_clock();
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
     InvalidateRect(hwnd, NULL, TRUE);
@@ -346,6 +382,34 @@ static void app_sync_keyboard(HWND hwnd)
         }
     }
     g_app.reset_key_down = reset_pressed;
+}
+
+static void app_tick(HWND hwnd)
+{
+    const double frame_interval = 1.0 / NES_FRAME_RATE_NTSC;
+    int frames = 0;
+
+    audio_pump();
+    if (!g_app.nes.rom_loaded) {
+        g_app.frame_accumulator = 0.0;
+        app_elapsed_seconds();
+        return;
+    }
+
+    g_app.frame_accumulator += app_elapsed_seconds();
+    while (g_app.frame_accumulator >= frame_interval && frames < APP_MAX_CATCHUP_FRAMES) {
+        app_sync_keyboard(hwnd);
+        nes_run_frame(&g_app.nes);
+        g_app.frame_accumulator -= frame_interval;
+        frames++;
+    }
+    if (frames == APP_MAX_CATCHUP_FRAMES && g_app.frame_accumulator >= frame_interval) {
+        g_app.frame_accumulator = frame_interval;
+    }
+    if (frames != 0) {
+        audio_pump();
+        InvalidateRect(hwnd, NULL, FALSE);
+    }
 }
 
 static void set_key_state(HWND hwnd, WPARAM key, int pressed, LPARAM lparam)
@@ -512,7 +576,6 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         app_init_bitmap_info();
         app_set_status(L"No ROM loaded.");
         timeBeginPeriod(1);
-        SetTimer(hwnd, FRAME_TIMER_ID, 16, NULL);
         return 0;
     case WM_ERASEBKGND:
         return 1;
@@ -533,19 +596,10 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
     case WM_PAINT:
         paint_window(hwnd);
         return 0;
-    case WM_TIMER:
-        if (wparam == FRAME_TIMER_ID && g_app.nes.rom_loaded) {
-            app_sync_keyboard(hwnd);
-            nes_run_frame(&g_app.nes);
-            audio_pump();
-            InvalidateRect(hwnd, NULL, FALSE);
-        }
-        return 0;
     case WM_SIZE:
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
     case WM_DESTROY:
-        KillTimer(hwnd, FRAME_TIMER_ID);
         timeEndPeriod(1);
         audio_close();
         app_release_backbuffer();
@@ -562,6 +616,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
     WNDCLASSEXW wc;
     HWND hwnd;
     MSG message;
+    int running = 1;
     int argc;
     LPWSTR *argv;
 
@@ -601,6 +656,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
 
     ShowWindow(hwnd, show_command);
     UpdateWindow(hwnd);
+    app_reset_clock();
 
     argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv != NULL) {
@@ -610,9 +666,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
         LocalFree(argv);
     }
 
-    while (GetMessageW(&message, NULL, 0, 0) > 0) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+    memset(&message, 0, sizeof(message));
+    while (running) {
+        while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
+            if (message.message == WM_QUIT) {
+                running = 0;
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        if (!running) {
+            break;
+        }
+        app_tick(hwnd);
+        Sleep(1);
     }
     return (int)message.wParam;
 }

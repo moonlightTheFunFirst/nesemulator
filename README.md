@@ -12,7 +12,8 @@ NESEMU is an early C-based NES emulator project. The first implementation target
 - Executes documented 6502 CPU opcodes used by mapper 0 games.
 - Implements CPU RAM, PPU registers, joypad strobe/read, OAM DMA, and NROM PRG/CHR mapping.
 - Renders a 256x240 framebuffer with background and sprite drawing.
-- Outputs basic APU pulse, triangle, and noise audio through the Windows host.
+- Outputs basic APU pulse, triangle, noise, and DMC audio through the Windows host.
+- Uses a high-resolution frame loop on Windows and pumps audio independently of paint events.
 - Tracks controller input:
   - `WASD` or arrow keys: directional pad
   - `Z` or Space: A
@@ -21,7 +22,7 @@ NESEMU is an early C-based NES emulator project. The first implementation target
   - `V` or Backspace: SELECT
   - `B`: reset
 
-This is not cycle-perfect yet. PPU scrolling, sprite evaluation, APU envelope/sweep/length behavior, DMC, and many unofficial CPU opcodes still need accuracy work.
+This is not cycle-perfect yet. PPU scrolling, sprite evaluation, APU envelope/sweep/length behavior, and many unofficial CPU opcodes still need accuracy work.
 
 ## Build
 
