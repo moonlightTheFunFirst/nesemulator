@@ -14,10 +14,12 @@
 
 #define WINDOW_CLASS_NAME L"NESEMUWindow"
 #define WINDOW_TITLE      L"NESEMU"
+#define ID_VIEW_2X_DISPLAY 1001
 #define AUDIO_BUFFERS     4u
 #define AUDIO_SAMPLES     512u
 #define NES_FRAME_RATE_NTSC 60.0988138974405
 #define APP_MAX_CATCHUP_FRAMES 3
+#define APP_FPS_UPDATE_SECONDS 0.5
 
 typedef struct AppState {
     NesEmu nes;
@@ -39,6 +41,10 @@ typedef struct AppState {
     LARGE_INTEGER perf_frequency;
     LARGE_INTEGER last_counter;
     double frame_accumulator;
+    double fps_elapsed;
+    double current_fps;
+    int fps_frames;
+    int display_2x;
     int clock_ready;
 } AppState;
 
@@ -65,6 +71,41 @@ static const WCHAR *mirroring_name(NesMirroring mirroring)
         return L"four-screen";
     default:
         return L"unknown";
+    }
+}
+
+static void app_update_title(HWND hwnd)
+{
+    WCHAR title[128];
+
+    swprintf(title,
+             sizeof(title) / sizeof(title[0]),
+             L"%ls - FPS: %.1f",
+             WINDOW_TITLE,
+             g_app.current_fps);
+    SetWindowTextW(hwnd, title);
+}
+
+static void app_reset_fps(HWND hwnd)
+{
+    g_app.fps_elapsed = 0.0;
+    g_app.fps_frames = 0;
+    g_app.current_fps = 0.0;
+    app_update_title(hwnd);
+}
+
+static void app_count_frames(HWND hwnd, double elapsed, int frames)
+{
+    if (!g_app.nes.rom_loaded) {
+        return;
+    }
+    g_app.fps_elapsed += elapsed;
+    g_app.fps_frames += frames;
+    if (g_app.fps_elapsed >= APP_FPS_UPDATE_SECONDS) {
+        g_app.current_fps = (double)g_app.fps_frames / g_app.fps_elapsed;
+        g_app.fps_elapsed = 0.0;
+        g_app.fps_frames = 0;
+        app_update_title(hwnd);
     }
 }
 
@@ -129,6 +170,71 @@ static void app_reset_clock(void)
     }
     QueryPerformanceCounter(&g_app.last_counter);
     g_app.frame_accumulator = 0.0;
+}
+
+static HMENU app_create_menu(void)
+{
+    HMENU menu = CreateMenu();
+    HMENU view_menu = CreatePopupMenu();
+
+    if (menu == NULL || view_menu == NULL) {
+        if (view_menu != NULL) {
+            DestroyMenu(view_menu);
+        }
+        if (menu != NULL) {
+            DestroyMenu(menu);
+        }
+        return NULL;
+    }
+
+    AppendMenuW(view_menu, MF_STRING, ID_VIEW_2X_DISPLAY, L"2x Display");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)view_menu, L"View");
+    return menu;
+}
+
+static void app_update_menu(HWND hwnd)
+{
+    HMENU menu = GetMenu(hwnd);
+
+    if (menu == NULL) {
+        return;
+    }
+    CheckMenuItem(menu,
+                  ID_VIEW_2X_DISPLAY,
+                  MF_BYCOMMAND | (g_app.display_2x ? MF_CHECKED : MF_UNCHECKED));
+    DrawMenuBar(hwnd);
+}
+
+static void app_resize_client(HWND hwnd, int width, int height)
+{
+    RECT rect;
+    DWORD style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = width;
+    rect.bottom = height;
+    if (!AdjustWindowRectEx(&rect, style, GetMenu(hwnd) != NULL, ex_style)) {
+        return;
+    }
+    SetWindowPos(hwnd,
+                 NULL,
+                 0,
+                 0,
+                 rect.right - rect.left,
+                 rect.bottom - rect.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+static void app_set_2x_display(HWND hwnd, int enabled)
+{
+    g_app.display_2x = enabled != 0;
+    app_update_menu(hwnd);
+    if (g_app.display_2x) {
+        app_resize_client(hwnd, (int)NESEMU_SCREEN_WIDTH * 2, (int)NESEMU_SCREEN_HEIGHT * 2);
+    }
+    InvalidateRect(hwnd, NULL, FALSE);
 }
 
 static double app_elapsed_seconds(void)
@@ -326,6 +432,7 @@ static void load_rom(HWND hwnd, const WCHAR *path)
     format_loaded_status(path);
     audio_start();
     app_reset_clock();
+    app_reset_fps(hwnd);
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
     InvalidateRect(hwnd, NULL, TRUE);
@@ -442,16 +549,17 @@ static void app_sync_keyboard(HWND hwnd)
 static void app_tick(HWND hwnd)
 {
     const double frame_interval = 1.0 / NES_FRAME_RATE_NTSC;
+    double elapsed;
     int frames = 0;
 
+    elapsed = app_elapsed_seconds();
     audio_pump();
     if (!g_app.nes.rom_loaded) {
         g_app.frame_accumulator = 0.0;
-        app_elapsed_seconds();
         return;
     }
 
-    g_app.frame_accumulator += app_elapsed_seconds();
+    g_app.frame_accumulator += elapsed;
     while (g_app.frame_accumulator >= frame_interval && frames < APP_MAX_CATCHUP_FRAMES) {
         app_sync_keyboard(hwnd);
         nes_run_frame(&g_app.nes);
@@ -466,6 +574,7 @@ static void app_tick(HWND hwnd)
         audio_pump();
         InvalidateRect(hwnd, NULL, FALSE);
     }
+    app_count_frames(hwnd, elapsed, frames);
 }
 
 static void set_key_state(HWND hwnd, WPARAM key, int pressed, LPARAM lparam)
@@ -564,12 +673,16 @@ static void paint_window(HWND hwnd)
 
     framebuffer = nes_get_framebuffer(&g_app.nes);
     if (g_app.nes.rom_loaded && framebuffer != NULL) {
-        scale = client_w / (int)NESEMU_SCREEN_WIDTH;
-        if (client_h / (int)NESEMU_SCREEN_HEIGHT < scale) {
-            scale = client_h / (int)NESEMU_SCREEN_HEIGHT;
-        }
-        if (scale < 1) {
-            scale = 1;
+        if (g_app.display_2x) {
+            scale = 2;
+        } else {
+            scale = client_w / (int)NESEMU_SCREEN_WIDTH;
+            if (client_h / (int)NESEMU_SCREEN_HEIGHT < scale) {
+                scale = client_h / (int)NESEMU_SCREEN_HEIGHT;
+            }
+            if (scale < 1) {
+                scale = 1;
+            }
         }
         draw_w = (int)NESEMU_SCREEN_WIDTH * scale;
         draw_h = (int)NESEMU_SCREEN_HEIGHT * scale;
@@ -639,6 +752,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         DragAcceptFiles(hwnd, TRUE);
         app_init_bitmap_info();
         app_set_status(L"No ROM loaded.");
+        app_update_title(hwnd);
+        app_update_menu(hwnd);
         timeBeginPeriod(1);
         return 0;
     case WM_ERASEBKGND:
@@ -657,6 +772,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
     case WM_SYSKEYUP:
         set_key_state(hwnd, wparam, 0, lparam);
         return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case ID_VIEW_2X_DISPLAY:
+            app_set_2x_display(hwnd, !g_app.display_2x);
+            return 0;
+        default:
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
     case WM_PAINT:
         paint_window(hwnd);
         return 0;
@@ -717,6 +840,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
     if (hwnd == NULL) {
         return 1;
     }
+    SetMenu(hwnd, app_create_menu());
+    app_update_menu(hwnd);
+    app_update_title(hwnd);
 
     ShowWindow(hwnd, show_command);
     UpdateWindow(hwnd);
