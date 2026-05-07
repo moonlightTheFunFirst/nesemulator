@@ -12,6 +12,8 @@ enum {
     PPU_SCANLINES_PER_FRAME = 262,
     PPU_CYCLES_PER_FRAME = PPU_CYCLES_PER_SCANLINE * PPU_SCANLINES_PER_FRAME,
     PPU_SCANLINE_RENDER_CYCLE = 16,
+    PPU_HORIZONTAL_RELOAD_CYCLE = 257,
+    PPU_VERTICAL_RELOAD_CYCLE = 280,
     PPU_VBLANK_EVENT = PPU_CYCLES_PER_SCANLINE * 241 + 1,
     PPU_PRERENDER_EVENT = PPU_CYCLES_PER_SCANLINE * 261 + 1
 };
@@ -63,6 +65,7 @@ static const uint8_t apu_length_table[32] = {
 
 static const uint8_t apu_envelope_reg_index[3] = { 0, 4, 12 };
 
+static void ppu_step(NesEmu *nes, int ppu_cycles);
 static void apu_clock_frame_counter(NesApu *apu, int cycles);
 static void apu_clock_audio(NesEmu *nes, int cycles);
 
@@ -476,6 +479,41 @@ static uint8_t cpu_read_bus(NesEmu *nes, uint16_t address)
         }
     }
     return 0xFFu;
+}
+
+static int ppu_event_between(int start, int end, int event)
+{
+    if (start <= end) {
+        return event > start && event <= end;
+    }
+    return event > start || event <= end;
+}
+
+static void ppu_apply_visible_status_before_read(NesEmu *nes, int cpu_cycles)
+{
+    int start;
+    int end;
+
+    if (cpu_cycles <= 0 || (nes->ppu.status & 0x40u) != 0 || nes->ppu.sprite0_hit_position < 0) {
+        return;
+    }
+    start = nes->ppu.scanline * PPU_CYCLES_PER_SCANLINE + nes->ppu.cycle;
+    end = start + cpu_cycles * 3;
+    while (end >= PPU_CYCLES_PER_FRAME) {
+        end -= PPU_CYCLES_PER_FRAME;
+    }
+    if (ppu_event_between(start, end, nes->ppu.sprite0_hit_position)) {
+        nes->ppu.status |= 0x40u;
+        nes->ppu.sprite0_hit_position = -1;
+    }
+}
+
+static uint8_t cpu_read_bus_delayed(NesEmu *nes, uint16_t address, int cpu_cycles)
+{
+    if (address >= 0x2000u && address < 0x4000u && (address & 7u) == 2u) {
+        ppu_apply_visible_status_before_read(nes, cpu_cycles);
+    }
+    return cpu_read_bus(nes, address);
 }
 
 static void cpu_write_bus(NesEmu *nes, uint16_t address, uint8_t value)
@@ -1002,7 +1040,8 @@ static int cpu_step(NesEmu *nes)
         break;
     case 0x2C:
         {
-            uint8_t value = cpu_read_bus(nes, addr_abs(nes));
+            uint16_t bit_address = addr_abs(nes);
+            uint8_t value = cpu_read_bus_delayed(nes, bit_address, 3);
             cpu_set_flag(nes, CPU_Z, (nes->cpu.a & value) == 0);
             cpu_set_flag(nes, CPU_N, (value & 0x80u) != 0);
             cpu_set_flag(nes, CPU_V, (value & 0x40u) != 0);
@@ -1516,7 +1555,8 @@ static int cpu_step(NesEmu *nes)
         cycles = 4;
         break;
     case 0xAD:
-        nes->cpu.a = cpu_read_bus(nes, addr_abs(nes));
+        address = addr_abs(nes);
+        nes->cpu.a = cpu_read_bus_delayed(nes, address, 3);
         cpu_set_zn(nes, nes->cpu.a);
         cycles = 4;
         break;
@@ -1906,11 +1946,51 @@ static int cpu_step(NesEmu *nes)
     return cycles;
 }
 
+static int ppu_rendering_enabled(const NesPpu *ppu)
+{
+    return (ppu->mask & 0x18u) != 0;
+}
+
+static void ppu_copy_horizontal_bits(NesPpu *ppu)
+{
+    ppu->v = (uint16_t)((ppu->v & 0x7BE0u) | (ppu->t & 0x041Fu));
+}
+
+static void ppu_copy_vertical_bits(NesPpu *ppu)
+{
+    ppu->v = (uint16_t)((ppu->v & 0x041Fu) | (ppu->t & 0x7BE0u));
+}
+
+static void ppu_increment_y(NesPpu *ppu)
+{
+    if ((ppu->v & 0x7000u) != 0x7000u) {
+        ppu->v = (uint16_t)(ppu->v + 0x1000u);
+    } else {
+        uint16_t coarse_y;
+
+        ppu->v &= (uint16_t)~0x7000u;
+        coarse_y = (uint16_t)((ppu->v & 0x03E0u) >> 5);
+        if (coarse_y == 29u) {
+            coarse_y = 0;
+            ppu->v ^= 0x0800u;
+        } else if (coarse_y == 31u) {
+            coarse_y = 0;
+        } else {
+            coarse_y++;
+        }
+        ppu->v = (uint16_t)((ppu->v & (uint16_t)~0x03E0u) | (coarse_y << 5));
+    }
+}
+
 static void render_background_scanline(NesEmu *nes, int y, uint8_t *bg_opaque)
 {
     int x;
-    int base_nt = nes->ppu.ctrl & 0x03;
-    int global_y = (((base_nt >> 1) & 1) * 240 + y + nes->ppu.scroll_y) % 480;
+    uint16_t line_v = nes->ppu.v;
+    int coarse_x_base = line_v & 0x1F;
+    int coarse_y_base = (line_v >> 5) & 0x1F;
+    int nt_x_base = (line_v >> 10) & 1;
+    int nt_y_base = (line_v >> 11) & 1;
+    int global_y = (nt_y_base * 240 + coarse_y_base * 8 + ((line_v >> 12) & 7)) % 480;
     int fine_y = global_y & 7;
     int tile_y = (global_y % 240) / 8;
     int current_key = -1;
@@ -1936,7 +2016,7 @@ static void render_background_scanline(NesEmu *nes, int y, uint8_t *bg_opaque)
             continue;
         }
 
-        global_x = ((base_nt & 1) * 256 + x + nes->ppu.scroll_x) & 0x1FF;
+        global_x = (nt_x_base * 256 + coarse_x_base * 8 + nes->ppu.fine_x + x) & 0x1FF;
         nt = (global_x / 256) + (global_y / 240) * 2;
         tile_x = (global_x & 0xFF) / 8;
         fine_x = global_x & 7;
@@ -2081,11 +2161,35 @@ static int ppu_next_event_after(const NesPpu *ppu, int position)
     int scanline = position / PPU_CYCLES_PER_SCANLINE;
     int cycle = position % PPU_CYCLES_PER_SCANLINE;
     int next_scanline = scanline + 1;
+    int candidate;
 
     if (scanline < 240 && cycle < PPU_SCANLINE_RENDER_CYCLE) {
         next = scanline * PPU_CYCLES_PER_SCANLINE + PPU_SCANLINE_RENDER_CYCLE;
     } else if (next_scanline < 240) {
         next = next_scanline * PPU_CYCLES_PER_SCANLINE + PPU_SCANLINE_RENDER_CYCLE;
+    }
+    if (scanline < 240 && cycle < PPU_HORIZONTAL_RELOAD_CYCLE) {
+        candidate = scanline * PPU_CYCLES_PER_SCANLINE + PPU_HORIZONTAL_RELOAD_CYCLE;
+        if (candidate < next) {
+            next = candidate;
+        }
+    } else if (next_scanline < 240) {
+        candidate = next_scanline * PPU_CYCLES_PER_SCANLINE + PPU_HORIZONTAL_RELOAD_CYCLE;
+        if (candidate < next) {
+            next = candidate;
+        }
+    }
+    if (scanline == 261 && cycle < PPU_HORIZONTAL_RELOAD_CYCLE) {
+        candidate = scanline * PPU_CYCLES_PER_SCANLINE + PPU_HORIZONTAL_RELOAD_CYCLE;
+        if (candidate < next) {
+            next = candidate;
+        }
+    }
+    if (scanline == 261 && cycle < PPU_VERTICAL_RELOAD_CYCLE) {
+        candidate = scanline * PPU_CYCLES_PER_SCANLINE + PPU_VERTICAL_RELOAD_CYCLE;
+        if (candidate < next) {
+            next = candidate;
+        }
     }
     if (position < PPU_VBLANK_EVENT && PPU_VBLANK_EVENT < next) {
         next = PPU_VBLANK_EVENT;
@@ -2114,6 +2218,18 @@ static void ppu_process_current_cycle(NesEmu *nes)
     if ((nes->ppu.status & 0x40u) == 0 && nes->ppu.sprite0_hit_position == position) {
         nes->ppu.status |= 0x40u;
         nes->ppu.sprite0_hit_position = -1;
+    }
+    if (ppu_rendering_enabled(&nes->ppu) && nes->ppu.cycle == PPU_HORIZONTAL_RELOAD_CYCLE) {
+        if (nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
+            ppu_increment_y(&nes->ppu);
+            ppu_copy_horizontal_bits(&nes->ppu);
+        } else if (nes->ppu.scanline == 261) {
+            ppu_copy_horizontal_bits(&nes->ppu);
+        }
+    }
+    if (ppu_rendering_enabled(&nes->ppu) && nes->ppu.scanline == 261 &&
+        nes->ppu.cycle == PPU_VERTICAL_RELOAD_CYCLE) {
+        ppu_copy_vertical_bits(&nes->ppu);
     }
     if (nes->ppu.cycle == PPU_SCANLINE_RENDER_CYCLE &&
         nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {

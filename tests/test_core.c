@@ -517,6 +517,87 @@ static int test_ppu_delays_writes_only_during_visible_rendering(void)
     return ok;
 }
 
+static int test_ppu_render_uses_v_scroll_address(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    int row;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16] = 0x02;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+    for (row = 0; row < 8; ++row) {
+        rom[16 + NESEMU_PRG_BANK_SIZE + 16 + row] = 0xFF;
+    }
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load v scroll render rom", result, NES_RESULT_OK);
+    nes.ppu.mask = 0x0Au;
+    nes.ppu.v = 0x2001u;
+    nes.ppu.t = 0x2001u;
+    nes.ppu.scanline = 0;
+    nes.ppu.cycle = 0;
+    nes.ppu.nametable[0] = 0;
+    nes.ppu.nametable[1] = 1;
+    nes.ppu.palette[0] = 0x0Fu;
+    nes.ppu.palette[1] = 0x30u;
+    nes_run_frame(&nes);
+    ok &= expect_int("v scroll starts from coarse x", nes.ppu.framebuffer[0] != nes.ppu.framebuffer[8], 1);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_ppustatus_read_uses_instruction_cycle(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0x2C, 0x02, 0x20, /* BIT $2002 */
+        0x08,             /* PHP */
+        0x68,             /* PLA */
+        0x85, 0x20,       /* STA $20 */
+        0x02              /* KIL */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load ppustatus timing rom", result, NES_RESULT_OK);
+    nes.ppu.scanline = 40;
+    nes.ppu.cycle = 20;
+    nes.ppu.mask = 0x18u;
+    nes.ppu.status = 0;
+    nes.ppu.sprite0_hit_position = 40 * 341 + 29;
+    nes_run_frame(&nes);
+    ok &= expect_int("bit sees sprite0 at read cycle", nes_cpu_read(&nes, 0x0020) & 0x40, 0x40);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_unofficial_opcodes(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -814,6 +895,8 @@ int main(int argc, char **argv)
     ok &= test_vblank_poll_can_suppress_pending_nmi();
     ok &= test_oam_dma_cycle_parity();
     ok &= test_ppu_delays_writes_only_during_visible_rendering();
+    ok &= test_ppu_render_uses_v_scroll_address();
+    ok &= test_ppustatus_read_uses_instruction_cycle();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();
