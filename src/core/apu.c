@@ -9,6 +9,7 @@ enum {
 
 static void apu_clock_length_counters(NesApu *apu);
 static void apu_clock_quarter_frame(NesApu *apu);
+static void apu_clock_dmc(NesEmu *nes, int cycles);
 
 void nes_apu_init(NesApu *apu)
 {
@@ -47,6 +48,12 @@ static const uint8_t apu_length_table[32] = {
 
 static const uint8_t apu_envelope_reg_index[3] = { 0, 4, 12 };
 
+static void dmc_start_sample(NesApu *apu)
+{
+    apu->dmc_current_address = apu->dmc_sample_address;
+    apu->dmc_bytes_remaining = apu->dmc_sample_length;
+}
+
 void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     if (address >= 0x4000u && address <= 0x4017u) {
@@ -54,6 +61,10 @@ void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
     }
     switch (address) {
     case 0x4010u:
+        if ((value & 0x80u) == 0) {
+            nes->apu.dmc_irq = 0;
+            nes_update_irq(nes);
+        }
         break;
     case 0x4011u:
         nes->apu.dmc_output = (uint8_t)(value & 0x7Fu);
@@ -90,6 +101,8 @@ void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         break;
     case 0x4015u:
         nes->apu.status = value;
+        nes->apu.dmc_irq = 0;
+        nes_update_irq(nes);
         if ((value & 0x01u) == 0) {
             nes->apu.length_counter[0] = 0;
         }
@@ -107,8 +120,7 @@ void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
             nes->apu.dmc_bits_remaining = 0;
             nes->apu.dmc_silence = 1;
         } else if (nes->apu.dmc_bytes_remaining == 0) {
-            nes->apu.dmc_current_address = nes->apu.dmc_sample_address;
-            nes->apu.dmc_bytes_remaining = nes->apu.dmc_sample_length;
+            dmc_start_sample(&nes->apu);
         }
         break;
     case 0x4017u:
@@ -144,13 +156,16 @@ uint8_t nes_apu_read(NesEmu *nes, uint16_t address)
         if (nes->apu.length_counter[3] != 0) {
             status |= 0x08u;
         }
-        if (nes->apu.dmc_bytes_remaining != 0 || nes->apu.dmc_bits_remaining != 0) {
+        if (nes->apu.dmc_bytes_remaining != 0) {
             status |= 0x10u;
         }
         if (nes->apu.frame_irq) {
             status |= 0x40u;
             nes->apu.frame_irq = 0;
             nes_update_irq(nes);
+        }
+        if (nes->apu.dmc_irq) {
+            status |= 0x80u;
         }
         return status;
     }
@@ -264,7 +279,6 @@ static double pulse_sample(NesApu *apu, int channel, int sample_rate)
     int duty = (r[0] >> 6) & 3;
     static const double duty_ratio[4] = { 0.125, 0.25, 0.5, 0.75 };
     double freq;
-    double sample;
 
     if (!enabled || apu->length_counter[channel] == 0 || timer < 8 || volume == 0) {
         return 0.0;
@@ -274,8 +288,7 @@ static double pulse_sample(NesApu *apu, int channel, int sample_rate)
     while (apu->pulse_phase[channel] >= 1.0) {
         apu->pulse_phase[channel] -= 1.0;
     }
-    sample = apu->pulse_phase[channel] < duty_ratio[duty] ? 1.0 : -1.0;
-    return sample * ((double)volume / 15.0);
+    return apu->pulse_phase[channel] < duty_ratio[duty] ? (double)volume : 0.0;
 }
 
 static double triangle_sample(NesApu *apu, int sample_rate)
@@ -295,7 +308,7 @@ static double triangle_sample(NesApu *apu, int sample_rate)
         apu->triangle_phase -= 1.0;
     }
     p = apu->triangle_phase;
-    return (p < 0.5 ? (p * 4.0 - 1.0) : (3.0 - p * 4.0)) * 0.75;
+    return p < 0.5 ? (15.0 - p * 30.0) : ((p - 0.5) * 30.0);
 }
 
 static double noise_sample(NesApu *apu, int sample_rate)
@@ -316,13 +329,7 @@ static double noise_sample(NesApu *apu, int sample_rate)
         apu->noise_lfsr = (uint16_t)((apu->noise_lfsr >> 1) | (feedback << 14));
         apu->noise_phase -= 1.0;
     }
-    return ((apu->noise_lfsr & 1u) ? -1.0 : 1.0) * ((double)volume / 15.0) * 0.45;
-}
-
-static void dmc_start_sample(NesApu *apu)
-{
-    apu->dmc_current_address = apu->dmc_sample_address;
-    apu->dmc_bytes_remaining = apu->dmc_sample_length;
+    return (apu->noise_lfsr & 1u) ? 0.0 : (double)volume;
 }
 
 static void dmc_fetch_byte(NesEmu *nes)
@@ -339,26 +346,30 @@ static void dmc_fetch_byte(NesEmu *nes)
     }
 
     apu->dmc_shift = nes_cpu_bus_read(nes, apu->dmc_current_address);
+    nes->cpu.extra_cycles += 4;
     apu->dmc_current_address++;
     if (apu->dmc_current_address == 0) {
         apu->dmc_current_address = 0x8000u;
     }
     apu->dmc_bytes_remaining--;
+    if (apu->dmc_bytes_remaining == 0 && (apu->regs[0x10] & 0xC0u) == 0x80u) {
+        apu->dmc_irq = 1;
+        nes_update_irq(nes);
+    }
     apu->dmc_bits_remaining = 8;
     apu->dmc_silence = 0;
 }
 
-static double dmc_sample(NesEmu *nes, int sample_rate)
+static void apu_clock_dmc(NesEmu *nes, int cycles)
 {
     NesApu *apu = &nes->apu;
     int period = dmc_periods[apu->regs[0x10] & 0x0Fu];
-    double freq = (double)CPU_CLOCK_NTSC / (double)period;
 
-    if ((apu->status & 0x10u) == 0) {
-        return 0.0;
+    if (cycles <= 0 || (apu->status & 0x10u) == 0) {
+        return;
     }
-    apu->dmc_phase += freq / (double)sample_rate;
-    while (apu->dmc_phase >= 1.0) {
+    apu->dmc_phase += (double)cycles;
+    while (apu->dmc_phase >= (double)period) {
         if (apu->dmc_bits_remaining == 0) {
             dmc_fetch_byte(nes);
         }
@@ -375,26 +386,38 @@ static double dmc_sample(NesEmu *nes, int sample_rate)
             apu->dmc_shift >>= 1;
             apu->dmc_bits_remaining--;
         }
-        apu->dmc_phase -= 1.0;
+        apu->dmc_phase -= (double)period;
     }
-    return ((double)apu->dmc_output - 64.0) / 64.0;
 }
 
 static int16_t apu_mix_sample(NesEmu *nes, int sample_rate)
 {
-    double mix = pulse_sample(&nes->apu, 0, sample_rate) * 0.22;
+    double pulse1 = pulse_sample(&nes->apu, 0, sample_rate);
+    double pulse2 = pulse_sample(&nes->apu, 1, sample_rate);
+    double triangle = triangle_sample(&nes->apu, sample_rate);
+    double noise = noise_sample(&nes->apu, sample_rate);
+    double dmc = (double)nes->apu.dmc_output;
+    double pulse_sum = pulse1 + pulse2;
+    double tnd_sum = triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0;
+    double mix = 0.0;
+    double filtered;
     int value;
 
-    mix += pulse_sample(&nes->apu, 1, sample_rate) * 0.22;
-    mix += triangle_sample(&nes->apu, sample_rate) * 0.18;
-    mix += noise_sample(&nes->apu, sample_rate) * 0.12;
-    mix += dmc_sample(nes, sample_rate) * 0.12;
-    if (mix > 1.0) {
-        mix = 1.0;
-    } else if (mix < -1.0) {
-        mix = -1.0;
+    if (pulse_sum > 0.0) {
+        mix += 95.88 / (8128.0 / pulse_sum + 100.0);
     }
-    value = (int)(mix * 28000.0);
+    if (tnd_sum > 0.0) {
+        mix += 159.79 / (1.0 / tnd_sum + 100.0);
+    }
+    filtered = mix - nes->apu.highpass_prev_input + 0.995 * nes->apu.highpass_prev_output;
+    nes->apu.highpass_prev_input = mix;
+    nes->apu.highpass_prev_output = filtered;
+    if (filtered > 1.0) {
+        filtered = 1.0;
+    } else if (filtered < -1.0) {
+        filtered = -1.0;
+    }
+    value = (int)(filtered * 32000.0);
     return (int16_t)value;
 }
 
@@ -416,6 +439,7 @@ void nes_apu_clock_audio(NesEmu *nes, int cycles)
     if (cycles <= 0) {
         return;
     }
+    apu_clock_dmc(nes, cycles);
     apu->sample_accumulator += (double)cycles * (double)NESEMU_AUDIO_RATE;
     while (apu->sample_accumulator >= (double)CPU_CLOCK_NTSC) {
         apu_queue_sample(apu, apu_mix_sample(nes, NESEMU_AUDIO_RATE));

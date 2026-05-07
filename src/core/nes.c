@@ -59,7 +59,7 @@ void nes_update_irq(NesEmu *nes)
         return;
     }
     mapper_irq = nes->rom_loaded && nes->rom.mapper_id == 4u && nes->mapper.mapper4_irq_pending;
-    nes->cpu.irq_pending = (nes->apu.frame_irq != 0) || mapper_irq;
+    nes->cpu.irq_pending = (nes->apu.frame_irq != 0) || (nes->apu.dmc_irq != 0) || mapper_irq;
 }
 
 static uint8_t palette_read(const NesPpu *ppu, uint16_t address)

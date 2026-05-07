@@ -131,6 +131,7 @@ typedef struct NesApu {
     uint8_t dmc_bits_remaining;
     uint8_t dmc_output;
     uint8_t dmc_silence;
+    uint8_t dmc_irq;
     uint8_t envelope_start[3];
     uint8_t envelope_decay[3];
     uint8_t envelope_divider[3];
@@ -141,6 +142,8 @@ typedef struct NesApu {
     uint8_t frame_irq;
     double frame_counter_accumulator;
     double sample_accumulator;
+    double highpass_prev_input;
+    double highpass_prev_output;
     size_t sample_read_pos;
     size_t sample_write_pos;
     size_t sample_count;

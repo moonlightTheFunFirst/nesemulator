@@ -1005,6 +1005,53 @@ static int test_dmc_playback_progresses(void)
     return ok;
 }
 
+static int test_dmc_irq_status_and_acknowledge(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16 + 0x40] = 0xFF;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load dmc irq rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4017, 0x40);
+    nes_cpu_write(&nes, 0x4010, 0x8F);
+    nes_cpu_write(&nes, 0x4012, 0x01);
+    nes_cpu_write(&nes, 0x4013, 0x00);
+    nes_cpu_write(&nes, 0x4015, 0x10);
+    nes_run_frame(&nes);
+    ok &= expect_int("dmc irq pending", nes.apu.dmc_irq, 1);
+    ok &= expect_int("dmc irq drives cpu irq", nes.cpu.irq_pending, 1);
+    ok &= expect_int("dmc irq status bit", nes_cpu_read(&nes, 0x4015) & 0x80, 0x80);
+    ok &= expect_int("dmc irq status read does not ack", nes_cpu_read(&nes, 0x4015) & 0x80, 0x80);
+    nes_cpu_write(&nes, 0x4010, 0x0F);
+    ok &= expect_int("dmc irq cleared by irq disable", nes_cpu_read(&nes, 0x4015) & 0x80, 0);
+
+    nes_cpu_write(&nes, 0x4010, 0x8F);
+    nes_cpu_write(&nes, 0x4015, 0x10);
+    nes_run_frame(&nes);
+    ok &= expect_int("dmc irq pending again", nes.apu.dmc_irq, 1);
+    nes_cpu_write(&nes, 0x4015, 0x10);
+    ok &= expect_int("dmc irq cleared by status write", nes.apu.dmc_irq, 0);
+    ok &= expect_int("dmc irq line cleared", nes.cpu.irq_pending, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_kil_opcode_stops_cpu(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1159,6 +1206,7 @@ int main(int argc, char **argv)
     ok &= test_apu_envelope_and_linear_counters();
     ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_dmc_playback_progresses();
+    ok &= test_dmc_irq_status_and_acknowledge();
     ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
     for (i = 1; i < argc; ++i) {
