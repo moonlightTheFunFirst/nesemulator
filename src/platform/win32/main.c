@@ -15,11 +15,14 @@
 #define WINDOW_CLASS_NAME L"NESEMUWindow"
 #define WINDOW_TITLE      L"NESEMU"
 #define ID_VIEW_2X_DISPLAY 1001
+#define ID_VIEW_OVERSCAN_CROP 1002
 #define AUDIO_BUFFERS     4u
 #define AUDIO_SAMPLES     512u
 #define NES_FRAME_RATE_NTSC 60.0988138974405
 #define APP_MAX_CATCHUP_FRAMES 3
 #define APP_FPS_UPDATE_SECONDS 0.5
+#define APP_OVERSCAN_CROP_X 8
+#define APP_OVERSCAN_CROP_Y 8
 
 typedef struct AppState {
     NesEmu nes;
@@ -45,6 +48,7 @@ typedef struct AppState {
     double current_fps;
     int fps_frames;
     int display_2x;
+    int overscan_crop;
     int clock_ready;
 } AppState;
 
@@ -58,6 +62,54 @@ static void app_set_status(const WCHAR *message)
     }
     wcsncpy(g_app.status, message, (sizeof(g_app.status) / sizeof(g_app.status[0])) - 1u);
     g_app.status[(sizeof(g_app.status) / sizeof(g_app.status[0])) - 1u] = L'\0';
+}
+
+static void app_ascii_to_wide(WCHAR *destination, size_t count, const char *source)
+{
+    size_t i = 0;
+
+    if (destination == NULL || count == 0) {
+        return;
+    }
+    if (source != NULL) {
+        while (source[i] != '\0' && i + 1u < count) {
+            destination[i] = (WCHAR)(unsigned char)source[i];
+            i++;
+        }
+    }
+    destination[i] = L'\0';
+}
+
+static int rom_image_mapper_id(const uint8_t *data, size_t size, uint8_t *mapper_id)
+{
+    if (data == NULL || mapper_id == NULL || size < 16u) {
+        return 0;
+    }
+    if (data[0] != 'N' || data[1] != 'E' || data[2] != 'S' || data[3] != 0x1Au) {
+        return 0;
+    }
+    *mapper_id = (uint8_t)((data[6] >> 4) | (data[7] & 0xF0u));
+    return 1;
+}
+
+static void format_load_failure_status(NesResult result, const uint8_t *data, size_t size)
+{
+    WCHAR result_text[128];
+    uint8_t mapper_id;
+
+    app_ascii_to_wide(result_text, sizeof(result_text) / sizeof(result_text[0]), nes_result_string(result));
+    if (result == NES_RESULT_UNSUPPORTED_MAPPER && rom_image_mapper_id(data, size, &mapper_id)) {
+        swprintf(g_app.status,
+                 sizeof(g_app.status) / sizeof(g_app.status[0]),
+                 L"ROM load failed: %ls (mapper %u).",
+                 result_text,
+                 (unsigned int)mapper_id);
+        return;
+    }
+    swprintf(g_app.status,
+             sizeof(g_app.status) / sizeof(g_app.status[0]),
+             L"ROM load failed: %ls.",
+             result_text);
 }
 
 static const WCHAR *mirroring_name(NesMirroring mirroring)
@@ -107,6 +159,26 @@ static void app_count_frames(HWND hwnd, double elapsed, int frames)
         g_app.fps_frames = 0;
         app_update_title(hwnd);
     }
+}
+
+static int app_display_source_x(void)
+{
+    return g_app.overscan_crop ? APP_OVERSCAN_CROP_X : 0;
+}
+
+static int app_display_source_y(void)
+{
+    return g_app.overscan_crop ? APP_OVERSCAN_CROP_Y : 0;
+}
+
+static int app_display_source_width(void)
+{
+    return (int)NESEMU_SCREEN_WIDTH - app_display_source_x() * 2;
+}
+
+static int app_display_source_height(void)
+{
+    return (int)NESEMU_SCREEN_HEIGHT - app_display_source_y() * 2;
 }
 
 static void format_loaded_status(const WCHAR *path)
@@ -188,6 +260,7 @@ static HMENU app_create_menu(void)
     }
 
     AppendMenuW(view_menu, MF_STRING, ID_VIEW_2X_DISPLAY, L"2x Display");
+    AppendMenuW(view_menu, MF_STRING, ID_VIEW_OVERSCAN_CROP, L"Overscan Crop");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)view_menu, L"View");
     return menu;
 }
@@ -202,6 +275,9 @@ static void app_update_menu(HWND hwnd)
     CheckMenuItem(menu,
                   ID_VIEW_2X_DISPLAY,
                   MF_BYCOMMAND | (g_app.display_2x ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(menu,
+                  ID_VIEW_OVERSCAN_CROP,
+                  MF_BYCOMMAND | (g_app.overscan_crop ? MF_CHECKED : MF_UNCHECKED));
     DrawMenuBar(hwnd);
 }
 
@@ -227,13 +303,26 @@ static void app_resize_client(HWND hwnd, int width, int height)
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+static void app_resize_to_display(HWND hwnd)
+{
+    int scale = g_app.display_2x ? 2 : 1;
+
+    app_resize_client(hwnd, app_display_source_width() * scale, app_display_source_height() * scale);
+}
+
 static void app_set_2x_display(HWND hwnd, int enabled)
 {
     g_app.display_2x = enabled != 0;
     app_update_menu(hwnd);
-    if (g_app.display_2x) {
-        app_resize_client(hwnd, (int)NESEMU_SCREEN_WIDTH * 2, (int)NESEMU_SCREEN_HEIGHT * 2);
-    }
+    app_resize_to_display(hwnd);
+    InvalidateRect(hwnd, NULL, FALSE);
+}
+
+static void app_set_overscan_crop(HWND hwnd, int enabled)
+{
+    g_app.overscan_crop = enabled != 0;
+    app_update_menu(hwnd);
+    app_resize_to_display(hwnd);
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
@@ -406,7 +495,6 @@ static void load_rom(HWND hwnd, const WCHAR *path)
     uint8_t *data;
     size_t size;
     NesResult result;
-    WCHAR message[512];
 
     if (!read_entire_file_w(path, &data, &size)) {
         app_set_status(L"ROM load failed: file could not be read.");
@@ -415,17 +503,14 @@ static void load_rom(HWND hwnd, const WCHAR *path)
     }
 
     result = nes_load_rom_image(&g_app.nes, data, size);
-    free(data);
 
     if (result != NES_RESULT_OK) {
-        swprintf(message,
-                 sizeof(message) / sizeof(message[0]),
-                 L"ROM load failed: %S.",
-                 nes_result_string(result));
-        app_set_status(message);
+        format_load_failure_status(result, data, size);
+        free(data);
         InvalidateRect(hwnd, NULL, TRUE);
         return;
     }
+    free(data);
 
     wcsncpy(g_app.rom_path, path, (sizeof(g_app.rom_path) / sizeof(g_app.rom_path[0])) - 1u);
     g_app.rom_path[(sizeof(g_app.rom_path) / sizeof(g_app.rom_path[0])) - 1u] = L'\0';
@@ -655,6 +740,10 @@ static void paint_window(HWND hwnd)
     int client_w;
     int client_h;
     int scale;
+    int source_x;
+    int source_y;
+    int source_w;
+    int source_h;
     int draw_w;
     int draw_h;
 
@@ -673,19 +762,23 @@ static void paint_window(HWND hwnd)
 
     framebuffer = nes_get_framebuffer(&g_app.nes);
     if (g_app.nes.rom_loaded && framebuffer != NULL) {
+        source_x = app_display_source_x();
+        source_y = app_display_source_y();
+        source_w = app_display_source_width();
+        source_h = app_display_source_height();
         if (g_app.display_2x) {
             scale = 2;
         } else {
-            scale = client_w / (int)NESEMU_SCREEN_WIDTH;
-            if (client_h / (int)NESEMU_SCREEN_HEIGHT < scale) {
-                scale = client_h / (int)NESEMU_SCREEN_HEIGHT;
+            scale = client_w / source_w;
+            if (client_h / source_h < scale) {
+                scale = client_h / source_h;
             }
             if (scale < 1) {
                 scale = 1;
             }
         }
-        draw_w = (int)NESEMU_SCREEN_WIDTH * scale;
-        draw_h = (int)NESEMU_SCREEN_HEIGHT * scale;
+        draw_w = source_w * scale;
+        draw_h = source_h * scale;
         frame_rect.left = (client_w - draw_w) / 2;
         frame_rect.top = (client_h - draw_h) / 2;
         frame_rect.right = frame_rect.left + draw_w;
@@ -695,10 +788,10 @@ static void paint_window(HWND hwnd)
                       frame_rect.top,
                       draw_w,
                       draw_h,
-                      0,
-                      0,
-                      NESEMU_SCREEN_WIDTH,
-                      NESEMU_SCREEN_HEIGHT,
+                      source_x,
+                      source_y,
+                      source_w,
+                      source_h,
                       framebuffer,
                       &g_app.frame_bmi,
                       DIB_RGB_COLORS,
@@ -777,6 +870,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         case ID_VIEW_2X_DISPLAY:
             app_set_2x_display(hwnd, !g_app.display_2x);
             return 0;
+        case ID_VIEW_OVERSCAN_CROP:
+            app_set_overscan_crop(hwnd, !g_app.overscan_crop);
+            return 0;
         default:
             return DefWindowProcW(hwnd, message, wparam, lparam);
         }
@@ -811,6 +907,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
     (void)command_line;
 
     nes_init(&g_app.nes);
+    g_app.overscan_crop = 1;
 
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -843,6 +940,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
     SetMenu(hwnd, app_create_menu());
     app_update_menu(hwnd);
     app_update_title(hwnd);
+    app_resize_to_display(hwnd);
 
     ShowWindow(hwnd, show_command);
     UpdateWindow(hwnd);
