@@ -1,5 +1,6 @@
 #include "apu.h"
 #include "nes_internal.h"
+#include "mapper/mapper19.h"
 
 #include <string.h>
 
@@ -485,6 +486,7 @@ static int16_t apu_mix_sample(NesEmu *nes, int sample_rate)
     double triangle = triangle_sample(&nes->apu, sample_rate);
     double noise = noise_sample(&nes->apu, sample_rate);
     double dmc = (double)nes->apu.dmc_output;
+    double namco163 = nes_mapper19_audio_sample(nes);
     double pulse_sum = pulse1 + pulse2;
     double tnd_sum = triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0;
     double mix = 0.0;
@@ -497,6 +499,7 @@ static int16_t apu_mix_sample(NesEmu *nes, int sample_rate)
     if (tnd_sum > 0.0) {
         mix += 159.79 / (1.0 / tnd_sum + 100.0);
     }
+    mix += namco163 / 360.0;
     filtered = mix - nes->apu.highpass_prev_input + 0.995 * nes->apu.highpass_prev_output;
     nes->apu.highpass_prev_input = mix;
     nes->apu.highpass_prev_output = filtered;
@@ -528,6 +531,7 @@ void nes_apu_clock_audio(NesEmu *nes, int cycles)
         return;
     }
     apu_clock_dmc(nes, cycles);
+    nes_mapper19_clock_audio(nes, cycles);
     apu->sample_accumulator += (double)cycles * (double)NESEMU_AUDIO_RATE;
     while (apu->sample_accumulator >= (double)CPU_CLOCK_NTSC) {
         apu_queue_sample(apu, apu_mix_sample(nes, NESEMU_AUDIO_RATE));

@@ -12,5 +12,7 @@ uint8_t nes_mapper19_ppu_read(const NesEmu *nes, uint16_t address);
 void nes_mapper19_ppu_write(NesEmu *nes, uint16_t address, uint8_t value);
 int nes_mapper19_prg_ram_write_enabled(const NesMapper *mapper, uint16_t address);
 void nes_mapper19_clock_irq(NesEmu *nes, int cycles);
+void nes_mapper19_clock_audio(NesEmu *nes, int cycles);
+double nes_mapper19_audio_sample(const NesEmu *nes);
 
 #endif

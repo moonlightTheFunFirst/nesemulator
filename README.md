@@ -13,6 +13,7 @@ NESEMU is an early C-based NES emulator project. The first implementation target
 - Implements CPU RAM, PPU registers, joypad strobe/read, OAM DMA, and NROM PRG/CHR mapping.
 - Renders a 256x240 framebuffer with background and sprite drawing.
 - Outputs basic APU pulse, triangle, noise, and DMC audio through the Windows host.
+- Mixes Namco 163 mapper 19 wavetable expansion audio.
 - Uses a high-resolution frame loop on Windows and pumps audio independently of paint events.
 - Tracks controller input:
   - `WASD` or arrow keys: directional pad

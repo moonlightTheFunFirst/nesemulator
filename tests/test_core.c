@@ -24,6 +24,28 @@ static int expect_int(const char *name, int actual, int expected)
     return 1;
 }
 
+static void mapper19_write_chip_ram(NesEmu *nes, uint8_t address, const uint8_t *values, size_t count)
+{
+    size_t i;
+
+    nes_cpu_write(nes, 0xF800u, (uint8_t)(address | 0x80u));
+    for (i = 0; i < count; ++i) {
+        nes_cpu_write(nes, 0x4800u, values[i]);
+    }
+}
+
+static int audio_has_signal(const int16_t *samples, size_t count)
+{
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        if (samples[i] != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int test_mapper0_load_and_map(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1218,6 +1240,64 @@ static int test_dmc_irq_status_and_acknowledge(void)
     return ok;
 }
 
+static int test_mapper19_n163_audio(void)
+{
+    uint8_t rom[TEST_MAPPER19_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_8k_banks = TEST_MAPPER19_PRG_BANKS * 2u;
+    size_t fixed_offset = prg_offset + (prg_8k_banks - 1u) * 0x2000u;
+    uint8_t waveform[] = { 0xF0, 0xF0 };
+    uint8_t channel8[] = {
+        0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00, 0x0F
+    };
+    int16_t samples[512];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER19_PRG_BANKS;
+    rom[5] = TEST_MAPPER19_CHR_BANKS;
+    rom[6] = 0x31;
+    rom[7] = 0x10;
+    rom[fixed_offset] = 0x4C;
+    rom[fixed_offset + 1] = 0x00;
+    rom[fixed_offset + 2] = 0xE0;
+    rom[fixed_offset + 0x1FFCu] = 0x00;
+    rom[fixed_offset + 0x1FFDu] = 0xE0;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load n163 audio rom", result, NES_RESULT_OK);
+    mapper19_write_chip_ram(&nes, 0x00u, waveform, sizeof(waveform));
+    mapper19_write_chip_ram(&nes, 0x78u, channel8, sizeof(channel8));
+    nes_cpu_write(&nes, 0xE000u, 0x00u);
+    nes_run_frame(&nes);
+    nes_render_audio(&nes, samples, sizeof(samples) / sizeof(samples[0]), NESEMU_AUDIO_RATE);
+    ok &= expect_int("n163 audio produced sample",
+                     audio_has_signal(samples, sizeof(samples) / sizeof(samples[0])),
+                     1);
+    nes_shutdown(&nes);
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load n163 mute rom", result, NES_RESULT_OK);
+    mapper19_write_chip_ram(&nes, 0x00u, waveform, sizeof(waveform));
+    mapper19_write_chip_ram(&nes, 0x78u, channel8, sizeof(channel8));
+    nes_cpu_write(&nes, 0xE000u, 0x40u);
+    nes_run_frame(&nes);
+    nes_render_audio(&nes, samples, sizeof(samples) / sizeof(samples[0]), NESEMU_AUDIO_RATE);
+    ok &= expect_int("n163 disable bit mutes",
+                     audio_has_signal(samples, sizeof(samples) / sizeof(samples[0])),
+                     0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_kil_opcode_stops_cpu(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1375,6 +1455,7 @@ int main(int argc, char **argv)
     ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_dmc_playback_progresses();
     ok &= test_dmc_irq_status_and_acknowledge();
+    ok &= test_mapper19_n163_audio();
     ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
     for (i = 1; i < argc; ++i) {

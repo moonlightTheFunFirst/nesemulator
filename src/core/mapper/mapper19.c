@@ -7,7 +7,8 @@
 enum {
     MAPPER19_PRG_BANK_SIZE = 0x2000,
     MAPPER19_CHR_BANK_SIZE = 0x0400,
-    MAPPER19_IRQ_LIMIT = 0x7FFF
+    MAPPER19_IRQ_LIMIT = 0x7FFF,
+    MAPPER19_AUDIO_TICK_CYCLES = 15
 };
 
 static size_t mapper19_prg_bank_count(const NesMapper *mapper)
@@ -31,6 +32,73 @@ static void mapper19_increment_internal_ram_addr(NesMapper *mapper)
     if (mapper->mapper19_ram_auto_increment) {
         mapper->mapper19_ram_addr = (uint8_t)((mapper->mapper19_ram_addr + 1u) & 0x7Fu);
     }
+}
+
+static int mapper19_audio_channel_count(const NesMapper *mapper)
+{
+    if (mapper == NULL) {
+        return 1;
+    }
+    return ((mapper->mapper19_internal_ram[0x7F] >> 4) & 7) + 1;
+}
+
+static uint8_t mapper19_audio_ram_sample(const NesMapper *mapper, uint8_t sample_index)
+{
+    uint8_t value = mapper->mapper19_internal_ram[sample_index >> 1];
+
+    if ((sample_index & 1u) != 0) {
+        return (uint8_t)((value >> 4) & 0x0Fu);
+    }
+    return (uint8_t)(value & 0x0Fu);
+}
+
+static void mapper19_write_phase(NesMapper *mapper, int base, uint32_t phase)
+{
+    mapper->mapper19_internal_ram[base + 1] = (uint8_t)(phase & 0xFFu);
+    mapper->mapper19_internal_ram[base + 3] = (uint8_t)((phase >> 8) & 0xFFu);
+    mapper->mapper19_internal_ram[base + 5] = (uint8_t)((phase >> 16) & 0xFFu);
+}
+
+static void mapper19_clock_audio_channel(NesMapper *mapper, int slot)
+{
+    int base = 0x78 - slot * 8;
+    uint8_t control;
+    uint8_t volume;
+    uint32_t length;
+    uint32_t phase;
+    uint32_t frequency;
+    uint32_t modulo;
+    uint8_t sample_index;
+    uint8_t sample;
+
+    if (base < 0x40) {
+        return;
+    }
+    control = mapper->mapper19_internal_ram[base + 4];
+    volume = (uint8_t)(mapper->mapper19_internal_ram[base + 7] & 0x0Fu);
+    length = 256u - (uint32_t)(control & 0xFCu);
+    phase = ((uint32_t)mapper->mapper19_internal_ram[base + 5] << 16) |
+            ((uint32_t)mapper->mapper19_internal_ram[base + 3] << 8) |
+            mapper->mapper19_internal_ram[base + 1];
+    frequency = ((uint32_t)(control & 0x03u) << 16) |
+                ((uint32_t)mapper->mapper19_internal_ram[base + 2] << 8) |
+                mapper->mapper19_internal_ram[base];
+
+    modulo = (uint32_t)length << 16;
+    if (modulo == 0) {
+        mapper->mapper19_audio_output[slot] = 0;
+        return;
+    }
+    phase = (phase + frequency) % modulo;
+    mapper19_write_phase(mapper, base, phase);
+
+    if (volume == 0) {
+        mapper->mapper19_audio_output[slot] = 0;
+        return;
+    }
+    sample_index = (uint8_t)(((phase >> 16) + mapper->mapper19_internal_ram[base + 6]) & 0xFFu);
+    sample = mapper19_audio_ram_sample(mapper, sample_index);
+    mapper->mapper19_audio_output[slot] = (int16_t)(((int)sample - 8) * (int)volume);
 }
 
 static uint8_t mapper19_read_prg_bank(const NesMapper *mapper, size_t bank, uint16_t address)
@@ -112,6 +180,9 @@ void nes_mapper19_init(NesMapper *mapper, NesMirroring mirroring)
     mapper->mapper19_ram_addr = 0;
     mapper->mapper19_ram_auto_increment = 0;
     mapper->mapper19_sound_disabled = 0;
+    mapper->mapper19_audio_cycle_accumulator = 0;
+    mapper->mapper19_audio_channel = 0;
+    memset(mapper->mapper19_audio_output, 0, sizeof(mapper->mapper19_audio_output));
     memset(mapper->mapper19_internal_ram, 0, sizeof(mapper->mapper19_internal_ram));
 }
 
@@ -329,4 +400,51 @@ void nes_mapper19_clock_irq(NesEmu *nes, int cycles)
     } else {
         mapper->mapper19_irq_counter = (uint16_t)(mapper->mapper19_irq_counter + (uint16_t)cycles);
     }
+}
+
+void nes_mapper19_clock_audio(NesEmu *nes, int cycles)
+{
+    NesMapper *mapper;
+    int channel_count;
+
+    if (nes == NULL || cycles <= 0 || nes->rom.mapper_id != 19u) {
+        return;
+    }
+    mapper = &nes->mapper;
+    if (mapper->mapper19_sound_disabled) {
+        mapper->mapper19_audio_cycle_accumulator = 0;
+        memset(mapper->mapper19_audio_output, 0, sizeof(mapper->mapper19_audio_output));
+        return;
+    }
+    channel_count = mapper19_audio_channel_count(mapper);
+    if (mapper->mapper19_audio_channel >= (uint8_t)channel_count) {
+        mapper->mapper19_audio_channel = 0;
+    }
+    mapper->mapper19_audio_cycle_accumulator += cycles;
+    while (mapper->mapper19_audio_cycle_accumulator >= MAPPER19_AUDIO_TICK_CYCLES) {
+        mapper19_clock_audio_channel(mapper, mapper->mapper19_audio_channel);
+        mapper->mapper19_audio_channel++;
+        if (mapper->mapper19_audio_channel >= (uint8_t)channel_count) {
+            mapper->mapper19_audio_channel = 0;
+        }
+        mapper->mapper19_audio_cycle_accumulator -= MAPPER19_AUDIO_TICK_CYCLES;
+    }
+}
+
+double nes_mapper19_audio_sample(const NesEmu *nes)
+{
+    const NesMapper *mapper;
+    int channel_count;
+    int i;
+    int total = 0;
+
+    if (nes == NULL || nes->rom.mapper_id != 19u || nes->mapper.mapper19_sound_disabled) {
+        return 0.0;
+    }
+    mapper = &nes->mapper;
+    channel_count = mapper19_audio_channel_count(mapper);
+    for (i = 0; i < channel_count; ++i) {
+        total += mapper->mapper19_audio_output[i];
+    }
+    return (double)total / (double)channel_count;
 }

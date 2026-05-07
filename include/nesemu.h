@@ -78,6 +78,9 @@ typedef struct NesMapper {
     uint8_t mapper19_ram_addr;
     uint8_t mapper19_ram_auto_increment;
     uint8_t mapper19_sound_disabled;
+    int mapper19_audio_cycle_accumulator;
+    uint8_t mapper19_audio_channel;
+    int16_t mapper19_audio_output[8];
     uint8_t mapper19_internal_ram[128];
     uint8_t prg_ram[NESEMU_PRG_RAM_SIZE];
 } NesMapper;
