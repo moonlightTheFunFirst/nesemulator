@@ -14,6 +14,7 @@ extern "C" {
 #define NESEMU_SCREEN_WIDTH  256u
 #define NESEMU_SCREEN_HEIGHT 240u
 #define NESEMU_AUDIO_RATE    44100u
+#define NESEMU_AUDIO_BUFFER_SAMPLES NESEMU_AUDIO_RATE
 
 typedef enum NesResult {
     NES_RESULT_OK = 0,
@@ -113,6 +114,18 @@ typedef struct NesApu {
     uint8_t dmc_bits_remaining;
     uint8_t dmc_output;
     uint8_t dmc_silence;
+    uint8_t envelope_start[3];
+    uint8_t envelope_decay[3];
+    uint8_t envelope_divider[3];
+    uint8_t triangle_linear_counter;
+    uint8_t triangle_linear_reload;
+    uint8_t frame_half_step;
+    double frame_counter_accumulator;
+    double sample_accumulator;
+    size_t sample_read_pos;
+    size_t sample_write_pos;
+    size_t sample_count;
+    int16_t sample_buffer[NESEMU_AUDIO_BUFFER_SAMPLES];
 } NesApu;
 
 typedef struct NesJoypad {

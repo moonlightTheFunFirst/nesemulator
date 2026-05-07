@@ -60,6 +60,11 @@ static const uint8_t apu_length_table[32] = {
     192, 24, 72, 26, 16, 28, 32, 30
 };
 
+static const uint8_t apu_envelope_reg_index[3] = { 0, 4, 12 };
+
+static void apu_clock_frame_counter(NesApu *apu, int cycles);
+static void apu_clock_audio(NesEmu *nes, int cycles);
+
 static void nes_mapper_clear(NesMapper *mapper)
 {
     if (mapper->prg_rom != NULL) {
@@ -291,21 +296,25 @@ static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         if ((nes->apu.status & 0x01u) != 0) {
             nes->apu.length_counter[0] = apu_length_table[value >> 3];
         }
+        nes->apu.envelope_start[0] = 1;
         break;
     case 0x4007u:
         if ((nes->apu.status & 0x02u) != 0) {
             nes->apu.length_counter[1] = apu_length_table[value >> 3];
         }
+        nes->apu.envelope_start[1] = 1;
         break;
     case 0x400Bu:
         if ((nes->apu.status & 0x04u) != 0) {
             nes->apu.length_counter[2] = apu_length_table[value >> 3];
         }
+        nes->apu.triangle_linear_reload = 1;
         break;
     case 0x400Fu:
         if ((nes->apu.status & 0x08u) != 0) {
             nes->apu.length_counter[3] = apu_length_table[value >> 3];
         }
+        nes->apu.envelope_start[2] = 1;
         break;
     case 0x4015u:
         nes->apu.status = value;
@@ -328,6 +337,13 @@ static void apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         } else if (nes->apu.dmc_bytes_remaining == 0) {
             nes->apu.dmc_current_address = nes->apu.dmc_sample_address;
             nes->apu.dmc_bytes_remaining = nes->apu.dmc_sample_length;
+        }
+        break;
+    case 0x4017u:
+        nes->apu.frame_counter_accumulator = 0.0;
+        nes->apu.frame_half_step = 0;
+        if ((value & 0x80u) != 0) {
+            apu_clock_frame_counter(&nes->apu, CPU_CLOCK_NTSC / 240);
         }
         break;
     default:
@@ -2027,7 +2043,9 @@ static void ppu_step(NesEmu *nes, int ppu_cycles)
 static void clock_cpu_cycles(NesEmu *nes, int cycles)
 {
     nes->cpu.cycles += (uint64_t)cycles;
+    apu_clock_frame_counter(&nes->apu, cycles);
     ppu_step(nes, cycles * 3);
+    apu_clock_audio(nes, cycles);
 }
 
 static void apu_clock_length_counters(NesApu *apu)
@@ -2046,6 +2064,75 @@ static void apu_clock_length_counters(NesApu *apu)
     }
 }
 
+static uint8_t apu_envelope_volume(const NesApu *apu, int channel)
+{
+    uint8_t reg = apu->regs[apu_envelope_reg_index[channel]];
+
+    if ((reg & 0x10u) != 0) {
+        return (uint8_t)(reg & 0x0Fu);
+    }
+    return apu->envelope_decay[channel];
+}
+
+static void apu_clock_envelope(NesApu *apu, int channel)
+{
+    uint8_t reg = apu->regs[apu_envelope_reg_index[channel]];
+    uint8_t period = (uint8_t)(reg & 0x0Fu);
+
+    if (apu->envelope_start[channel]) {
+        apu->envelope_start[channel] = 0;
+        apu->envelope_decay[channel] = 15;
+        apu->envelope_divider[channel] = period;
+    } else if (apu->envelope_divider[channel] == 0) {
+        apu->envelope_divider[channel] = period;
+        if (apu->envelope_decay[channel] != 0) {
+            apu->envelope_decay[channel]--;
+        } else if ((reg & 0x20u) != 0) {
+            apu->envelope_decay[channel] = 15;
+        }
+    } else {
+        apu->envelope_divider[channel]--;
+    }
+}
+
+static void apu_clock_triangle_linear(NesApu *apu)
+{
+    if (apu->triangle_linear_reload) {
+        apu->triangle_linear_counter = (uint8_t)(apu->regs[8] & 0x7Fu);
+    } else if (apu->triangle_linear_counter != 0) {
+        apu->triangle_linear_counter--;
+    }
+    if ((apu->regs[8] & 0x80u) == 0) {
+        apu->triangle_linear_reload = 0;
+    }
+}
+
+static void apu_clock_quarter_frame(NesApu *apu)
+{
+    apu_clock_envelope(apu, 0);
+    apu_clock_envelope(apu, 1);
+    apu_clock_envelope(apu, 2);
+    apu_clock_triangle_linear(apu);
+}
+
+static void apu_clock_frame_counter(NesApu *apu, int cycles)
+{
+    const double quarter_frame_cycles = (double)CPU_CLOCK_NTSC / 240.0;
+
+    if (cycles <= 0) {
+        return;
+    }
+    apu->frame_counter_accumulator += (double)cycles;
+    while (apu->frame_counter_accumulator >= quarter_frame_cycles) {
+        apu_clock_quarter_frame(apu);
+        if (apu->frame_half_step) {
+            apu_clock_length_counters(apu);
+        }
+        apu->frame_half_step = (uint8_t)!apu->frame_half_step;
+        apu->frame_counter_accumulator -= quarter_frame_cycles;
+    }
+}
+
 void nes_run_frame(NesEmu *nes)
 {
     int guard = 0;
@@ -2059,8 +2146,6 @@ void nes_run_frame(NesEmu *nes)
         clock_cpu_cycles(nes, cycles);
         guard++;
     }
-    apu_clock_length_counters(&nes->apu);
-    apu_clock_length_counters(&nes->apu);
 }
 
 const uint32_t *nes_get_framebuffer(const NesEmu *nes)
@@ -2076,7 +2161,7 @@ static double pulse_sample(NesApu *apu, int channel, int sample_rate)
     const uint8_t *r = &apu->regs[channel ? 4 : 0];
     int enabled = (apu->status & (channel ? 0x02u : 0x01u)) != 0;
     int timer = r[2] | ((r[3] & 0x07) << 8);
-    int volume = r[0] & 0x0F;
+    int volume = apu_envelope_volume(apu, channel);
     int duty = (r[0] >> 6) & 3;
     static const double duty_ratio[4] = { 0.125, 0.25, 0.5, 0.75 };
     double freq;
@@ -2102,7 +2187,7 @@ static double triangle_sample(NesApu *apu, int sample_rate)
     double freq;
     double p;
 
-    if (!enabled || apu->length_counter[2] == 0 || timer < 2) {
+    if (!enabled || apu->length_counter[2] == 0 || apu->triangle_linear_counter == 0 || timer < 2) {
         return 0.0;
     }
     freq = (double)CPU_CLOCK_NTSC / (32.0 * (double)(timer + 1));
@@ -2118,7 +2203,7 @@ static double noise_sample(NesApu *apu, int sample_rate)
 {
     const uint8_t *r = &apu->regs[12];
     int enabled = (apu->status & 0x08u) != 0;
-    int volume = r[0] & 0x0F;
+    int volume = apu_envelope_volume(apu, 2);
     int period = noise_periods[r[2] & 0x0F];
     double freq;
 
@@ -2196,6 +2281,60 @@ static double dmc_sample(NesEmu *nes, int sample_rate)
     return ((double)apu->dmc_output - 64.0) / 64.0;
 }
 
+static int16_t apu_mix_sample(NesEmu *nes, int sample_rate)
+{
+    double mix = pulse_sample(&nes->apu, 0, sample_rate) * 0.22;
+    int value;
+
+    mix += pulse_sample(&nes->apu, 1, sample_rate) * 0.22;
+    mix += triangle_sample(&nes->apu, sample_rate) * 0.18;
+    mix += noise_sample(&nes->apu, sample_rate) * 0.12;
+    mix += dmc_sample(nes, sample_rate) * 0.12;
+    if (mix > 1.0) {
+        mix = 1.0;
+    } else if (mix < -1.0) {
+        mix = -1.0;
+    }
+    value = (int)(mix * 28000.0);
+    return (int16_t)value;
+}
+
+static void apu_queue_sample(NesApu *apu, int16_t sample)
+{
+    if (apu->sample_count == NESEMU_AUDIO_BUFFER_SAMPLES) {
+        apu->sample_read_pos = (apu->sample_read_pos + 1u) % NESEMU_AUDIO_BUFFER_SAMPLES;
+        apu->sample_count--;
+    }
+    apu->sample_buffer[apu->sample_write_pos] = sample;
+    apu->sample_write_pos = (apu->sample_write_pos + 1u) % NESEMU_AUDIO_BUFFER_SAMPLES;
+    apu->sample_count++;
+}
+
+static void apu_clock_audio(NesEmu *nes, int cycles)
+{
+    NesApu *apu = &nes->apu;
+
+    if (cycles <= 0) {
+        return;
+    }
+    apu->sample_accumulator += (double)cycles * (double)NESEMU_AUDIO_RATE;
+    while (apu->sample_accumulator >= (double)CPU_CLOCK_NTSC) {
+        apu_queue_sample(apu, apu_mix_sample(nes, NESEMU_AUDIO_RATE));
+        apu->sample_accumulator -= (double)CPU_CLOCK_NTSC;
+    }
+}
+
+static int apu_pop_sample(NesApu *apu, int16_t *sample)
+{
+    if (apu->sample_count == 0) {
+        return 0;
+    }
+    *sample = apu->sample_buffer[apu->sample_read_pos];
+    apu->sample_read_pos = (apu->sample_read_pos + 1u) % NESEMU_AUDIO_BUFFER_SAMPLES;
+    apu->sample_count--;
+    return 1;
+}
+
 void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sample_rate)
 {
     size_t i;
@@ -2207,21 +2346,16 @@ void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sa
         memset(samples, 0, sample_count * sizeof(samples[0]));
         return;
     }
-    for (i = 0; i < sample_count; ++i) {
-        double mix = pulse_sample(&nes->apu, 0, sample_rate) * 0.22;
-        int value;
-
-        mix += pulse_sample(&nes->apu, 1, sample_rate) * 0.22;
-        mix += triangle_sample(&nes->apu, sample_rate) * 0.18;
-        mix += noise_sample(&nes->apu, sample_rate) * 0.12;
-        mix += dmc_sample(nes, sample_rate) * 0.12;
-        if (mix > 1.0) {
-            mix = 1.0;
-        } else if (mix < -1.0) {
-            mix = -1.0;
+    if (sample_rate != (int)NESEMU_AUDIO_RATE) {
+        for (i = 0; i < sample_count; ++i) {
+            samples[i] = apu_mix_sample(nes, sample_rate);
         }
-        value = (int)(mix * 28000.0);
-        samples[i] = (int16_t)value;
+        return;
+    }
+    for (i = 0; i < sample_count; ++i) {
+        if (!apu_pop_sample(&nes->apu, &samples[i])) {
+            samples[i] = 0;
+        }
     }
 }
 

@@ -503,6 +503,38 @@ static int test_apu_length_counter(void)
     return ok;
 }
 
+static int test_apu_envelope_and_linear_counters(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load apu envelope rom", result, NES_RESULT_OK);
+    nes_cpu_write(&nes, 0x4015, 0x05);
+    nes_cpu_write(&nes, 0x4000, 0x00);
+    nes_cpu_write(&nes, 0x4003, 0x08);
+    nes_cpu_write(&nes, 0x4008, 0x02);
+    nes_cpu_write(&nes, 0x400B, 0x08);
+    nes_run_frame(&nes);
+    ok &= expect_int("pulse envelope decays", nes.apu.envelope_decay[0] < 15, 1);
+    ok &= expect_int("triangle linear counts down", nes.apu.triangle_linear_counter < 2, 1);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_dmc_playback_progresses(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -513,14 +545,19 @@ static int test_dmc_playback_progresses(void)
     int i;
     int nonzero = 0;
 
-    memset(rom, 0, sizeof(rom));
+    memset(rom, 0xEA, sizeof(rom));
     rom[0] = 'N';
     rom[1] = 'E';
     rom[2] = 'S';
     rom[3] = 0x1A;
     rom[4] = 1;
     rom[5] = 1;
-    rom[16] = 0xFF;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16 + 0x40] = 0xFF;
+    rom[16 + 0x41] = 0xFF;
+    rom[16 + 0x42] = 0xFF;
+    rom[16 + 0x43] = 0xFF;
     rom[16 + 0x3FFC] = 0x00;
     rom[16 + 0x3FFD] = 0x80;
 
@@ -529,9 +566,10 @@ static int test_dmc_playback_progresses(void)
     ok &= expect_int("load dmc rom", result, NES_RESULT_OK);
     nes_cpu_write(&nes, 0x4010, 0x0F);
     nes_cpu_write(&nes, 0x4011, 0x40);
-    nes_cpu_write(&nes, 0x4012, 0x00);
+    nes_cpu_write(&nes, 0x4012, 0x01);
     nes_cpu_write(&nes, 0x4013, 0x00);
     nes_cpu_write(&nes, 0x4015, 0x10);
+    nes_run_frame(&nes);
     nes_render_audio(&nes, samples, sizeof(samples) / sizeof(samples[0]), NESEMU_AUDIO_RATE);
     for (i = 0; i < (int)(sizeof(samples) / sizeof(samples[0])); ++i) {
         if (samples[i] != 0) {
@@ -688,6 +726,7 @@ int main(int argc, char **argv)
     ok &= test_vblank_poll_can_suppress_pending_nmi();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
+    ok &= test_apu_envelope_and_linear_counters();
     ok &= test_dmc_playback_progresses();
     ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
