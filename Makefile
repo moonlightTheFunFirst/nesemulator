@@ -7,7 +7,7 @@ CFLAGS ?= -std=c11 -Wall -Wextra -O2
 CPPFLAGS := -Iinclude
 WIN_CPPFLAGS := -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN
 WIN_LDFLAGS := -mwindows -municode
-WIN_LIBS := -luser32 -lshell32 -lgdi32
+WIN_LIBS := -luser32 -lshell32 -lgdi32 -lwinmm
 
 CORE_SRCS := src/core/nes.c
 WIN_SRCS := src/platform/win32/main.c

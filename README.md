@@ -6,8 +6,13 @@ NESEMU is an early C-based NES emulator project. The first implementation target
 
 - Starts a single Windows SDI window.
 - Accepts `.nes` files by drag and drop.
+- Accepts a ROM path as the first command-line argument.
 - Parses iNES ROM images for mapper 0 (NROM).
 - Maps mapper 0 CPU PRG ROM/PRG RAM and PPU CHR ROM/CHR RAM.
+- Executes documented 6502 CPU opcodes used by mapper 0 games.
+- Implements CPU RAM, PPU registers, joypad strobe/read, OAM DMA, and NROM PRG/CHR mapping.
+- Renders a 256x240 framebuffer with background and sprite drawing.
+- Outputs basic APU pulse, triangle, and noise audio through the Windows host.
 - Tracks controller input:
   - `WASD`: directional pad
   - `Z`: A
@@ -16,7 +21,7 @@ NESEMU is an early C-based NES emulator project. The first implementation target
   - `V`: SELECT
   - `B`: reset
 
-CPU, PPU, APU, frame timing, and actual game execution are not implemented yet.
+This is not cycle-perfect yet. PPU scrolling, sprite evaluation, APU envelope/sweep/length behavior, DMC, and many unofficial CPU opcodes still need accuracy work.
 
 ## Build
 
@@ -36,6 +41,12 @@ Run the Windows app:
 
 ```sh
 make run
+```
+
+Run a ROM directly:
+
+```sh
+build/nesemu.exe "rom/Balloon Fight (Japan)/Balloon Fight (Japan).nes"
 ```
 
 Visual Studio 2022 can open the folder as a CMake project. Configure and build the `nesemu` target from the CMake view.

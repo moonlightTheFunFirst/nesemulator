@@ -11,6 +11,9 @@ extern "C" {
 #define NESEMU_PRG_BANK_SIZE 0x4000u
 #define NESEMU_CHR_BANK_SIZE 0x2000u
 #define NESEMU_PRG_RAM_SIZE  0x2000u
+#define NESEMU_SCREEN_WIDTH  256u
+#define NESEMU_SCREEN_HEIGHT 240u
+#define NESEMU_AUDIO_RATE    44100u
 
 typedef enum NesResult {
     NES_RESULT_OK = 0,
@@ -57,10 +60,63 @@ typedef struct NesMapper {
     uint8_t prg_ram[NESEMU_PRG_RAM_SIZE];
 } NesMapper;
 
+typedef struct NesCpu {
+    uint8_t a;
+    uint8_t x;
+    uint8_t y;
+    uint8_t p;
+    uint8_t sp;
+    uint16_t pc;
+    uint64_t cycles;
+    int nmi_pending;
+    int extra_cycles;
+} NesCpu;
+
+typedef struct NesPpu {
+    uint8_t ctrl;
+    uint8_t mask;
+    uint8_t status;
+    uint8_t oam_addr;
+    uint8_t write_latch;
+    uint8_t fine_x;
+    uint8_t data_buffer;
+    uint8_t oam[256];
+    uint8_t nametable[2048];
+    uint8_t palette[32];
+    uint16_t v;
+    uint16_t t;
+    uint8_t scroll_x;
+    uint8_t scroll_y;
+    int scanline;
+    int cycle;
+    uint64_t frame;
+    uint8_t frame_ready;
+    uint32_t framebuffer[NESEMU_SCREEN_WIDTH * NESEMU_SCREEN_HEIGHT];
+} NesPpu;
+
+typedef struct NesApu {
+    uint8_t regs[0x18];
+    uint8_t status;
+    double pulse_phase[2];
+    double triangle_phase;
+    double noise_phase;
+    uint16_t noise_lfsr;
+} NesApu;
+
+typedef struct NesJoypad {
+    uint8_t state;
+    uint8_t shift;
+    uint8_t strobe;
+} NesJoypad;
+
 typedef struct NesEmu {
     NesRomInfo rom;
     NesMapper mapper;
-    uint8_t buttons;
+    NesCpu cpu;
+    NesPpu ppu;
+    NesApu apu;
+    NesJoypad joypad;
+    uint8_t ram[2048];
     uint16_t reset_vector;
     uint8_t rom_loaded;
 } NesEmu;
@@ -75,7 +131,11 @@ const char *nes_result_string(NesResult result);
 void nes_set_button(NesEmu *nes, NesButton button, int pressed);
 int nes_get_button(const NesEmu *nes, NesButton button);
 
-uint8_t nes_cpu_read(const NesEmu *nes, uint16_t address);
+void nes_run_frame(NesEmu *nes);
+const uint32_t *nes_get_framebuffer(const NesEmu *nes);
+void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sample_rate);
+
+uint8_t nes_cpu_read(NesEmu *nes, uint16_t address);
 void nes_cpu_write(NesEmu *nes, uint16_t address, uint8_t value);
 uint8_t nes_ppu_read(const NesEmu *nes, uint16_t address);
 void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value);
