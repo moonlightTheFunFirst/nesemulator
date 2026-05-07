@@ -575,8 +575,12 @@ static void ppu_schedule_sprite0_hit(NesEmu *nes, int y, int x)
 static void render_scanline(NesEmu *nes, int y)
 {
     uint8_t bg_opaque[NESEMU_SCREEN_WIDTH];
+    uint32_t bg_pixels[NESEMU_SCREEN_WIDTH];
 
     render_background_scanline(nes, y, bg_opaque);
+    memcpy(bg_pixels,
+           &nes->ppu.framebuffer[y * NESEMU_SCREEN_WIDTH],
+           sizeof(bg_pixels));
 
     if ((nes->ppu.mask & 0x10u) != 0) {
         int sprite;
@@ -641,6 +645,8 @@ static void render_scanline(NesEmu *nes, int y)
                 if ((attr & 0x20u) == 0 || !bg_opaque[screen_x]) {
                     nes->ppu.framebuffer[y * NESEMU_SCREEN_WIDTH + screen_x] =
                         nes_palette_rgb[palette_read(&nes->ppu, (uint16_t)(0x3F00u + slot)) & 0x3Fu];
+                } else {
+                    nes->ppu.framebuffer[y * NESEMU_SCREEN_WIDTH + screen_x] = bg_pixels[screen_x];
                 }
             }
             if (sprite == 0) {
