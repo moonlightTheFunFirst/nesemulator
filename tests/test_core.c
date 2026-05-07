@@ -158,6 +158,8 @@ static int test_joypad_shift(void)
     rom[3] = 0x1A;
     rom[4] = 1;
     rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
     rom[16 + 0x3FFC] = 0x00;
     rom[16 + 0x3FFD] = 0x80;
 
@@ -206,6 +208,8 @@ static int test_balloon_fight_controller_poll_shape(void)
     rom[3] = 0x1A;
     rom[4] = 1;
     rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
     rom[16 + 0x3FFC] = 0x00;
     rom[16 + 0x3FFD] = 0x80;
 
@@ -270,6 +274,100 @@ static int test_balloon_fight_controller_routine(void)
     nes_set_button(&nes, NES_BUTTON_START, 1);
     nes_run_frame(&nes);
     ok &= expect_int("balloon routine RAM bits", nes_cpu_read(&nes, 0x061C), 0x90);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mach_rider_controller_routine(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0xA0, 0x01,       /* LDY #$01 */
+        0x8C, 0x16, 0x40, /* STY $4016 */
+        0x88,             /* DEY */
+        0x8C, 0x16, 0x40, /* STY $4016 */
+        0xAD, 0x16, 0x40, /* LDA $4016 */
+        0x29, 0x03,       /* AND #$03 */
+        0x85, 0x54,       /* STA $54 */
+        0xAD, 0x16, 0x40, /* LDA $4016 */
+        0x29, 0x03,       /* AND #$03 */
+        0x85, 0x55,       /* STA $55 */
+        0xAD, 0x16, 0x40, /* LDA $4016 */
+        0x29, 0x03,       /* AND #$03 */
+        0x85, 0x51,       /* STA $51 */
+        0xAD, 0x16, 0x40, /* LDA $4016 */
+        0x29, 0x03,       /* AND #$03 */
+        0x85, 0x52,       /* STA $52 */
+        0x4C, 0x2D, 0x80  /* JMP $802D */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mach routine rom", result, NES_RESULT_OK);
+    nes_set_button(&nes, NES_BUTTON_START, 1);
+    nes_run_frame(&nes);
+    ok &= expect_int("mach routine A released", nes_cpu_read(&nes, 0x0054), 0);
+    ok &= expect_int("mach routine B released", nes_cpu_read(&nes, 0x0055), 0);
+    ok &= expect_int("mach routine SELECT released", nes_cpu_read(&nes, 0x0051), 0);
+    ok &= expect_int("mach routine START pressed", nes_cpu_read(&nes, 0x0052), 1);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_ppuctrl_nmi_rising_edge(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load nmi edge rom", result, NES_RESULT_OK);
+
+    nes.ppu.status = 0x80u;
+    nes.ppu.ctrl = 0x00u;
+    nes.cpu.nmi_pending = 0;
+    nes_cpu_write(&nes, 0x2000, 0x80);
+    ok &= expect_int("ppuctrl nmi rising edge", nes.cpu.nmi_pending, 1);
+
+    nes.cpu.nmi_pending = 0;
+    nes_cpu_write(&nes, 0x2000, 0x80);
+    ok &= expect_int("ppuctrl nmi held high", nes.cpu.nmi_pending, 0);
+
+    nes_cpu_write(&nes, 0x2000, 0x00);
+    nes.cpu.nmi_pending = 0;
+    nes_cpu_write(&nes, 0x2000, 0x80);
+    ok &= expect_int("ppuctrl nmi re-enabled", nes.cpu.nmi_pending, 1);
+
     nes_shutdown(&nes);
     return ok;
 }
@@ -528,6 +626,8 @@ int main(int argc, char **argv)
     ok &= test_joypad_shift();
     ok &= test_balloon_fight_controller_poll_shape();
     ok &= test_balloon_fight_controller_routine();
+    ok &= test_mach_rider_controller_routine();
+    ok &= test_ppuctrl_nmi_rising_edge();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_dmc_playback_progresses();

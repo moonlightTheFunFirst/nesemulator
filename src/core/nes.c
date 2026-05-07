@@ -216,10 +216,14 @@ static void ppu_write_register(NesEmu *nes, uint16_t address, uint8_t value)
 
     switch (address & 7u) {
     case 0:
-        ppu->ctrl = value;
-        ppu->t = (uint16_t)((ppu->t & 0xF3FFu) | ((uint16_t)(value & 0x03u) << 10));
-        if ((value & 0x80u) != 0 && (ppu->status & 0x80u) != 0) {
-            nes->cpu.nmi_pending = 1;
+        {
+            uint8_t old_ctrl = ppu->ctrl;
+
+            ppu->ctrl = value;
+            ppu->t = (uint16_t)((ppu->t & 0xF3FFu) | ((uint16_t)(value & 0x03u) << 10));
+            if ((old_ctrl & 0x80u) == 0 && (value & 0x80u) != 0 && (ppu->status & 0x80u) != 0) {
+                nes->cpu.nmi_pending = 1;
+            }
         }
         break;
     case 1:
@@ -1928,7 +1932,8 @@ static void render_scanline(NesEmu *nes, int y)
                     continue;
                 }
                 slot = (uint8_t)(0x10u + (attr & 0x03u) * 4u + color);
-                if (sprite == 0 && bg_opaque[screen_x] && screen_x < 255) {
+                if (sprite == 0 && screen_x < 255 &&
+                    (bg_opaque[screen_x] || (nes->ppu.mask & 0x08u) != 0)) {
                     nes->ppu.status |= 0x40u;
                 }
                 if ((attr & 0x20u) == 0 || !bg_opaque[screen_x]) {
@@ -1976,6 +1981,9 @@ static void ppu_process_current_cycle(NesEmu *nes)
 {
     if (nes->ppu.cycle == 0 && nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
         render_scanline(nes, nes->ppu.scanline);
+        if (nes->ppu.scanline == 239 && (nes->ppu.mask & 0x18u) == 0x18u) {
+            nes->ppu.status |= 0x40u;
+        }
     }
     if (nes->ppu.scanline == 241 && nes->ppu.cycle == 1) {
         nes->ppu.status |= 0x80u;

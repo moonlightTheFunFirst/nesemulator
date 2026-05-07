@@ -34,6 +34,8 @@ typedef struct AppState {
     int paint_width;
     int paint_height;
     int reset_key_down;
+    uint8_t event_buttons;
+    uint8_t pending_buttons;
     LARGE_INTEGER perf_frequency;
     LARGE_INTEGER last_counter;
     double frame_accumulator;
@@ -345,12 +347,41 @@ static int app_key_down(int vk)
     return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
+static uint8_t app_button_mask(NesButton button)
+{
+    return (uint8_t)(1u << (unsigned int)button);
+}
+
+static int app_window_active(HWND hwnd)
+{
+    HWND foreground = GetForegroundWindow();
+
+    return foreground == hwnd || GetActiveWindow() == hwnd ||
+           (foreground != NULL && GetAncestor(foreground, GA_ROOT) == hwnd);
+}
+
+static void app_set_button_event(NesButton button, int pressed)
+{
+    uint8_t mask = app_button_mask(button);
+
+    if (pressed) {
+        g_app.event_buttons |= mask;
+        g_app.pending_buttons |= mask;
+    } else {
+        g_app.event_buttons &= (uint8_t)~mask;
+    }
+    nes_set_button(&g_app.nes, button, pressed);
+}
+
 static void app_sync_keyboard(HWND hwnd)
 {
-    int active = GetForegroundWindow() == hwnd;
+    int active = app_window_active(hwnd);
+    uint8_t pending = g_app.pending_buttons;
     int reset_pressed;
 
     if (!active) {
+        g_app.event_buttons = 0;
+        g_app.pending_buttons = 0;
         nes_set_button(&g_app.nes, NES_BUTTON_UP, 0);
         nes_set_button(&g_app.nes, NES_BUTTON_DOWN, 0);
         nes_set_button(&g_app.nes, NES_BUTTON_LEFT, 0);
@@ -363,14 +394,38 @@ static void app_sync_keyboard(HWND hwnd)
         return;
     }
 
-    nes_set_button(&g_app.nes, NES_BUTTON_UP, app_key_down('W') || app_key_down(VK_UP));
-    nes_set_button(&g_app.nes, NES_BUTTON_DOWN, app_key_down('S') || app_key_down(VK_DOWN));
-    nes_set_button(&g_app.nes, NES_BUTTON_LEFT, app_key_down('A') || app_key_down(VK_LEFT));
-    nes_set_button(&g_app.nes, NES_BUTTON_RIGHT, app_key_down('D') || app_key_down(VK_RIGHT));
-    nes_set_button(&g_app.nes, NES_BUTTON_A, app_key_down('Z') || app_key_down(VK_SPACE));
-    nes_set_button(&g_app.nes, NES_BUTTON_B, app_key_down('X') || app_key_down(VK_SHIFT));
-    nes_set_button(&g_app.nes, NES_BUTTON_START, app_key_down('C') || app_key_down(VK_RETURN));
-    nes_set_button(&g_app.nes, NES_BUTTON_SELECT, app_key_down('V') || app_key_down(VK_BACK));
+    nes_set_button(&g_app.nes, NES_BUTTON_UP,
+                   app_key_down('W') || app_key_down(VK_UP) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_UP)) ||
+                       (pending & app_button_mask(NES_BUTTON_UP)));
+    nes_set_button(&g_app.nes, NES_BUTTON_DOWN,
+                   app_key_down('S') || app_key_down(VK_DOWN) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_DOWN)) ||
+                       (pending & app_button_mask(NES_BUTTON_DOWN)));
+    nes_set_button(&g_app.nes, NES_BUTTON_LEFT,
+                   app_key_down('A') || app_key_down(VK_LEFT) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_LEFT)) ||
+                       (pending & app_button_mask(NES_BUTTON_LEFT)));
+    nes_set_button(&g_app.nes, NES_BUTTON_RIGHT,
+                   app_key_down('D') || app_key_down(VK_RIGHT) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_RIGHT)) ||
+                       (pending & app_button_mask(NES_BUTTON_RIGHT)));
+    nes_set_button(&g_app.nes, NES_BUTTON_A,
+                   app_key_down('Z') || app_key_down(VK_SPACE) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_A)) ||
+                       (pending & app_button_mask(NES_BUTTON_A)));
+    nes_set_button(&g_app.nes, NES_BUTTON_B,
+                   app_key_down('X') || app_key_down(VK_SHIFT) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_B)) ||
+                       (pending & app_button_mask(NES_BUTTON_B)));
+    nes_set_button(&g_app.nes, NES_BUTTON_START,
+                   app_key_down('C') || app_key_down(VK_RETURN) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_START)) ||
+                       (pending & app_button_mask(NES_BUTTON_START)));
+    nes_set_button(&g_app.nes, NES_BUTTON_SELECT,
+                   app_key_down('V') || app_key_down(VK_BACK) ||
+                       (g_app.event_buttons & app_button_mask(NES_BUTTON_SELECT)) ||
+                       (pending & app_button_mask(NES_BUTTON_SELECT)));
 
     reset_pressed = app_key_down('B');
     if (reset_pressed && !g_app.reset_key_down) {
@@ -400,6 +455,7 @@ static void app_tick(HWND hwnd)
     while (g_app.frame_accumulator >= frame_interval && frames < APP_MAX_CATCHUP_FRAMES) {
         app_sync_keyboard(hwnd);
         nes_run_frame(&g_app.nes);
+        g_app.pending_buttons = 0;
         g_app.frame_accumulator -= frame_interval;
         frames++;
     }
@@ -418,28 +474,36 @@ static void set_key_state(HWND hwnd, WPARAM key, int pressed, LPARAM lparam)
 
     switch (key) {
     case 'W':
-        nes_set_button(&g_app.nes, NES_BUTTON_UP, pressed);
+    case VK_UP:
+        app_set_button_event(NES_BUTTON_UP, pressed);
         break;
     case 'A':
-        nes_set_button(&g_app.nes, NES_BUTTON_LEFT, pressed);
+    case VK_LEFT:
+        app_set_button_event(NES_BUTTON_LEFT, pressed);
         break;
     case 'S':
-        nes_set_button(&g_app.nes, NES_BUTTON_DOWN, pressed);
+    case VK_DOWN:
+        app_set_button_event(NES_BUTTON_DOWN, pressed);
         break;
     case 'D':
-        nes_set_button(&g_app.nes, NES_BUTTON_RIGHT, pressed);
+    case VK_RIGHT:
+        app_set_button_event(NES_BUTTON_RIGHT, pressed);
         break;
     case 'Z':
-        nes_set_button(&g_app.nes, NES_BUTTON_A, pressed);
+    case VK_SPACE:
+        app_set_button_event(NES_BUTTON_A, pressed);
         break;
     case 'X':
-        nes_set_button(&g_app.nes, NES_BUTTON_B, pressed);
+    case VK_SHIFT:
+        app_set_button_event(NES_BUTTON_B, pressed);
         break;
     case 'C':
-        nes_set_button(&g_app.nes, NES_BUTTON_START, pressed);
+    case VK_RETURN:
+        app_set_button_event(NES_BUTTON_START, pressed);
         break;
     case 'V':
-        nes_set_button(&g_app.nes, NES_BUTTON_SELECT, pressed);
+    case VK_BACK:
+        app_set_button_event(NES_BUTTON_SELECT, pressed);
         break;
     case 'B':
         if (pressed && first_press) {
