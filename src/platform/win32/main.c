@@ -27,6 +27,11 @@ typedef struct AppState {
     WAVEHDR wave_headers[AUDIO_BUFFERS];
     int16_t wave_buffers[AUDIO_BUFFERS][AUDIO_SAMPLES];
     int audio_open;
+    HDC paint_dc;
+    HBITMAP paint_bitmap;
+    HBITMAP old_paint_bitmap;
+    int paint_width;
+    int paint_height;
 } AppState;
 
 static AppState g_app;
@@ -88,6 +93,52 @@ static void app_init_bitmap_info(void)
     g_app.frame_bmi.bmiHeader.biPlanes = 1;
     g_app.frame_bmi.bmiHeader.biBitCount = 32;
     g_app.frame_bmi.bmiHeader.biCompression = BI_RGB;
+}
+
+static void app_release_backbuffer(void)
+{
+    if (g_app.paint_dc != NULL) {
+        if (g_app.old_paint_bitmap != NULL) {
+            SelectObject(g_app.paint_dc, g_app.old_paint_bitmap);
+        }
+        if (g_app.paint_bitmap != NULL) {
+            DeleteObject(g_app.paint_bitmap);
+        }
+        DeleteDC(g_app.paint_dc);
+    }
+    g_app.paint_dc = NULL;
+    g_app.paint_bitmap = NULL;
+    g_app.old_paint_bitmap = NULL;
+    g_app.paint_width = 0;
+    g_app.paint_height = 0;
+}
+
+static HDC app_get_backbuffer(HDC window_dc, int width, int height)
+{
+    HBITMAP bitmap;
+
+    if (width <= 0 || height <= 0) {
+        return NULL;
+    }
+    if (g_app.paint_dc != NULL && g_app.paint_width == width && g_app.paint_height == height) {
+        return g_app.paint_dc;
+    }
+
+    app_release_backbuffer();
+    g_app.paint_dc = CreateCompatibleDC(window_dc);
+    if (g_app.paint_dc == NULL) {
+        return NULL;
+    }
+    bitmap = CreateCompatibleBitmap(window_dc, width, height);
+    if (bitmap == NULL) {
+        app_release_backbuffer();
+        return NULL;
+    }
+    g_app.paint_bitmap = bitmap;
+    g_app.old_paint_bitmap = (HBITMAP)SelectObject(g_app.paint_dc, g_app.paint_bitmap);
+    g_app.paint_width = width;
+    g_app.paint_height = height;
+    return g_app.paint_dc;
 }
 
 static void audio_close(void)
@@ -305,6 +356,7 @@ static void append_button_text(WCHAR *buffer, size_t count, const WCHAR *name, i
 static void paint_window(HWND hwnd)
 {
     PAINTSTRUCT ps;
+    HDC window_dc;
     HDC dc;
     RECT rect;
     RECT frame_rect;
@@ -320,8 +372,14 @@ static void paint_window(HWND hwnd)
     int draw_w;
     int draw_h;
 
-    dc = BeginPaint(hwnd, &ps);
+    window_dc = BeginPaint(hwnd, &ps);
     GetClientRect(hwnd, &rect);
+    client_w = rect.right - rect.left;
+    client_h = rect.bottom - rect.top;
+    dc = app_get_backbuffer(window_dc, client_w, client_h);
+    if (dc == NULL) {
+        dc = window_dc;
+    }
 
     brush = CreateSolidBrush(RGB(20, 22, 24));
     FillRect(dc, &rect, brush);
@@ -329,8 +387,6 @@ static void paint_window(HWND hwnd)
 
     framebuffer = nes_get_framebuffer(&g_app.nes);
     if (g_app.nes.rom_loaded && framebuffer != NULL) {
-        client_w = rect.right - rect.left;
-        client_h = rect.bottom - rect.top;
         scale = client_w / (int)NESEMU_SCREEN_WIDTH;
         if (client_h / (int)NESEMU_SCREEN_HEIGHT < scale) {
             scale = client_h / (int)NESEMU_SCREEN_HEIGHT;
@@ -393,6 +449,9 @@ static void paint_window(HWND hwnd)
         SelectObject(dc, old_font);
         DeleteObject(font);
     }
+    if (dc != window_dc) {
+        BitBlt(window_dc, 0, 0, client_w, client_h, dc, 0, 0, SRCCOPY);
+    }
     EndPaint(hwnd, &ps);
 }
 
@@ -403,8 +462,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         DragAcceptFiles(hwnd, TRUE);
         app_init_bitmap_info();
         app_set_status(L"No ROM loaded.");
+        timeBeginPeriod(1);
         SetTimer(hwnd, FRAME_TIMER_ID, 16, NULL);
         return 0;
+    case WM_ERASEBKGND:
+        return 1;
     case WM_DROPFILES:
         handle_drop(hwnd, (HDROP)wparam);
         return 0;
@@ -426,9 +488,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
             InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
+    case WM_SIZE:
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
     case WM_DESTROY:
         KillTimer(hwnd, FRAME_TIMER_ID);
+        timeEndPeriod(1);
         audio_close();
+        app_release_backbuffer();
         nes_shutdown(&g_app.nes);
         PostQuitMessage(0);
         return 0;
@@ -456,7 +523,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
     wc.lpfnWndProc = window_proc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = NULL;
     wc.lpszClassName = WINDOW_CLASS_NAME;
 
     if (!RegisterClassExW(&wc)) {

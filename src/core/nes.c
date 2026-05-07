@@ -1355,55 +1355,6 @@ static uint8_t background_pixel(NesEmu *nes, int x, int y, uint8_t *palette_slot
     return color;
 }
 
-static uint8_t sprite_pixel(NesEmu *nes, int sprite, int x, int y, uint8_t *palette_slot, int *priority)
-{
-    const uint8_t *oam = &nes->ppu.oam[sprite * 4];
-    int sprite_y = (int)oam[0] + 1;
-    int tile = oam[1];
-    int attr = oam[2];
-    int sprite_x = oam[3];
-    int height = (nes->ppu.ctrl & 0x20u) ? 16 : 8;
-    int row;
-    int col;
-    uint16_t pattern;
-    uint8_t lo;
-    uint8_t hi;
-    uint8_t bit;
-    uint8_t color;
-
-    if (x < sprite_x || x >= sprite_x + 8 || y < sprite_y || y >= sprite_y + height) {
-        return 0;
-    }
-    row = y - sprite_y;
-    col = x - sprite_x;
-    if ((attr & 0x80u) != 0) {
-        row = height - 1 - row;
-    }
-    if ((attr & 0x40u) != 0) {
-        col = 7 - col;
-    }
-
-    if (height == 16) {
-        pattern = (uint16_t)((tile & 1) * 0x1000u + (tile & 0xFE) * 16u + (row & 7));
-        if (row >= 8) {
-            pattern = (uint16_t)(pattern + 16u);
-        }
-    } else {
-        pattern = (uint16_t)(((nes->ppu.ctrl & 0x08u) ? 0x1000u : 0x0000u) + tile * 16 + row);
-    }
-    lo = nes_ppu_read(nes, pattern);
-    hi = nes_ppu_read(nes, (uint16_t)(pattern + 8));
-    bit = (uint8_t)(7 - col);
-    color = (uint8_t)(((lo >> bit) & 1u) | (((hi >> bit) & 1u) << 1));
-    if (color == 0) {
-        return 0;
-    }
-
-    *palette_slot = (uint8_t)(0x10u + (attr & 0x03u) * 4u + color);
-    *priority = (attr & 0x20u) != 0;
-    return color;
-}
-
 static void render_scanline(NesEmu *nes, int y)
 {
     int x;
@@ -1427,23 +1378,59 @@ static void render_scanline(NesEmu *nes, int y)
     if ((nes->ppu.mask & 0x10u) != 0) {
         int sprite;
         for (sprite = 63; sprite >= 0; --sprite) {
-            for (x = 0; x < (int)NESEMU_SCREEN_WIDTH; ++x) {
-                uint8_t slot = 0;
-                int behind_bg = 0;
-                uint8_t color;
+            const uint8_t *oam = &nes->ppu.oam[sprite * 4];
+            int sprite_y = (int)oam[0] + 1;
+            int tile = oam[1];
+            int attr = oam[2];
+            int sprite_x = oam[3];
+            int height = (nes->ppu.ctrl & 0x20u) ? 16 : 8;
+            int row;
+            uint16_t pattern;
+            uint8_t lo;
+            uint8_t hi;
+            int col;
 
-                if (x < 8 && (nes->ppu.mask & 0x04u) == 0) {
+            if (y < sprite_y || y >= sprite_y + height) {
+                continue;
+            }
+            row = y - sprite_y;
+            if ((attr & 0x80u) != 0) {
+                row = height - 1 - row;
+            }
+            if (height == 16) {
+                pattern = (uint16_t)((tile & 1) * 0x1000u + (tile & 0xFE) * 16u + (row & 7));
+                if (row >= 8) {
+                    pattern = (uint16_t)(pattern + 16u);
+                }
+            } else {
+                pattern = (uint16_t)(((nes->ppu.ctrl & 0x08u) ? 0x1000u : 0x0000u) + tile * 16 + row);
+            }
+            lo = nes_ppu_read(nes, pattern);
+            hi = nes_ppu_read(nes, (uint16_t)(pattern + 8));
+
+            for (col = 0; col < 8; ++col) {
+                int screen_x = sprite_x + col;
+                int source_col = (attr & 0x40u) ? (7 - col) : col;
+                uint8_t bit = (uint8_t)(7 - source_col);
+                uint8_t color;
+                uint8_t slot;
+
+                if (screen_x < 0 || screen_x >= (int)NESEMU_SCREEN_WIDTH) {
                     continue;
                 }
-                color = sprite_pixel(nes, sprite, x, y, &slot, &behind_bg);
+                if (screen_x < 8 && (nes->ppu.mask & 0x04u) == 0) {
+                    continue;
+                }
+                color = (uint8_t)(((lo >> bit) & 1u) | (((hi >> bit) & 1u) << 1));
                 if (color == 0) {
                     continue;
                 }
-                if (sprite == 0 && bg_opaque[x] && x < 255) {
+                slot = (uint8_t)(0x10u + (attr & 0x03u) * 4u + color);
+                if (sprite == 0 && bg_opaque[screen_x] && screen_x < 255) {
                     nes->ppu.status |= 0x40u;
                 }
-                if (!behind_bg || !bg_opaque[x]) {
-                    nes->ppu.framebuffer[y * NESEMU_SCREEN_WIDTH + x] =
+                if ((attr & 0x20u) == 0 || !bg_opaque[screen_x]) {
+                    nes->ppu.framebuffer[y * NESEMU_SCREEN_WIDTH + screen_x] =
                         nes_palette_rgb[palette_read(&nes->ppu, (uint16_t)(0x3F00u + slot)) & 0x3Fu];
                 }
             }
