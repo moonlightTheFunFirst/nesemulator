@@ -16,6 +16,8 @@ enum {
     PPU_CYCLES_PER_FRAME = PPU_CYCLES_PER_SCANLINE * PPU_SCANLINES_PER_FRAME,
     PPU_SCANLINE_RENDER_CYCLE = 16,
     PPU_HORIZONTAL_RELOAD_CYCLE = 257,
+    PPU_MMC3_SPRITE_FETCH_CYCLE = 260,
+    PPU_MMC3_BG_FETCH_CYCLE = 324,
     PPU_VERTICAL_RELOAD_CYCLE = 280,
     PPU_VBLANK_EVENT = PPU_CYCLES_PER_SCANLINE * 241 + 1,
     PPU_PRERENDER_EVENT = PPU_CYCLES_PER_SCANLINE * 261 + 1
@@ -737,13 +739,63 @@ static void ppu_set_position(NesPpu *ppu, int position)
     ppu->cycle = position % PPU_CYCLES_PER_SCANLINE;
 }
 
-static int ppu_next_event_after(const NesPpu *ppu, int position)
+static int ppu_mapper4_irq_scanline(int scanline)
 {
+    return (scanline >= 0 && scanline < 240) || scanline == 261;
+}
+
+static int ppu_sprite_pattern_a12_high(const NesEmu *nes, int scanline)
+{
+    const NesPpu *ppu = &nes->ppu;
+    int sprite;
+    int selected = 0;
+
+    if ((ppu->ctrl & 0x20u) == 0) {
+        return (ppu->ctrl & 0x08u) != 0;
+    }
+    for (sprite = 0; sprite < 64 && selected < 8; ++sprite) {
+        const uint8_t *oam = &ppu->oam[sprite * 4];
+        int sprite_y = (int)oam[0] + 1;
+
+        if (scanline >= sprite_y && scanline < sprite_y + 16) {
+            selected++;
+            if ((oam[1] & 1u) != 0) {
+                return 1;
+            }
+        }
+    }
+    return selected < 8;
+}
+
+static int ppu_mapper4_irq_event_cycle(const NesEmu *nes, int scanline)
+{
+    int bg_high;
+    int sprite_high;
+
+    if (nes->rom.mapper_id != 4u || !ppu_rendering_enabled(&nes->ppu) ||
+        !ppu_mapper4_irq_scanline(scanline)) {
+        return -1;
+    }
+    bg_high = (nes->ppu.ctrl & 0x10u) != 0;
+    sprite_high = ppu_sprite_pattern_a12_high(nes, scanline);
+    if (!bg_high && sprite_high) {
+        return PPU_MMC3_SPRITE_FETCH_CYCLE;
+    }
+    if (bg_high && !sprite_high) {
+        return PPU_MMC3_BG_FETCH_CYCLE;
+    }
+    return -1;
+}
+
+static int ppu_next_event_after(const NesEmu *nes, int position)
+{
+    const NesPpu *ppu = &nes->ppu;
     int next = PPU_CYCLES_PER_FRAME;
     int scanline = position / PPU_CYCLES_PER_SCANLINE;
     int cycle = position % PPU_CYCLES_PER_SCANLINE;
     int next_scanline = scanline + 1;
     int candidate;
+    int mmc3_cycle;
 
     if (scanline < 240 && cycle < PPU_SCANLINE_RENDER_CYCLE) {
         next = scanline * PPU_CYCLES_PER_SCANLINE + PPU_SCANLINE_RENDER_CYCLE;
@@ -759,6 +811,21 @@ static int ppu_next_event_after(const NesPpu *ppu, int position)
         candidate = next_scanline * PPU_CYCLES_PER_SCANLINE + PPU_HORIZONTAL_RELOAD_CYCLE;
         if (candidate < next) {
             next = candidate;
+        }
+    }
+    mmc3_cycle = ppu_mapper4_irq_event_cycle(nes, scanline);
+    if (mmc3_cycle >= 0 && cycle < mmc3_cycle) {
+        candidate = scanline * PPU_CYCLES_PER_SCANLINE + mmc3_cycle;
+        if (candidate < next) {
+            next = candidate;
+        }
+    } else if (next_scanline < PPU_SCANLINES_PER_FRAME) {
+        mmc3_cycle = ppu_mapper4_irq_event_cycle(nes, next_scanline);
+        if (mmc3_cycle >= 0) {
+            candidate = next_scanline * PPU_CYCLES_PER_SCANLINE + mmc3_cycle;
+            if (candidate < next) {
+                next = candidate;
+            }
         }
     }
     if (scanline == 261 && cycle < PPU_HORIZONTAL_RELOAD_CYCLE) {
@@ -805,12 +872,13 @@ static void ppu_process_current_cycle(NesEmu *nes)
         if (nes->ppu.scanline >= 0 && nes->ppu.scanline < 240) {
             ppu_increment_y(&nes->ppu);
             ppu_copy_horizontal_bits(&nes->ppu);
-            if (nes->rom.mapper_id == 4u) {
-                nes_mapper4_clock_scanline(nes);
-            }
         } else if (nes->ppu.scanline == 261) {
             ppu_copy_horizontal_bits(&nes->ppu);
         }
+    }
+    if (nes->rom.mapper_id == 4u &&
+        nes->ppu.cycle == ppu_mapper4_irq_event_cycle(nes, nes->ppu.scanline)) {
+        nes_mapper4_clock_a12_rising(nes);
     }
     if (ppu_rendering_enabled(&nes->ppu) && nes->ppu.scanline == 261 &&
         nes->ppu.cycle == PPU_VERTICAL_RELOAD_CYCLE) {
@@ -843,7 +911,7 @@ static void ppu_step(NesEmu *nes, int ppu_cycles)
         int step;
 
         ppu_process_current_cycle(nes);
-        next_event = ppu_next_event_after(&nes->ppu, position);
+        next_event = ppu_next_event_after(nes, position);
         step = next_event - position;
         if (step <= 0) {
             step = PPU_CYCLES_PER_FRAME - position;

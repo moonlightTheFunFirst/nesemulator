@@ -217,7 +217,7 @@ void nes_mapper4_chr_write(NesMapper *mapper, uint16_t address, uint8_t value)
     }
 }
 
-void nes_mapper4_clock_scanline(NesEmu *nes)
+void nes_mapper4_clock_a12_rising(NesEmu *nes)
 {
     NesMapper *mapper;
 

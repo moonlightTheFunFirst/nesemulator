@@ -161,9 +161,11 @@ static int test_mapper4_bank_switch_and_irq(void)
         0xA9, 0x00,             /* LDA #$00 */
         0x8D, 0x01, 0xC0,       /* STA $C001: reload */
         0x8D, 0x01, 0xE0,       /* STA $E001: enable */
+        0xA9, 0x08,             /* LDA #$08 */
+        0x8D, 0x00, 0x20,       /* STA $2000: sprite pattern table at $1000 */
         0xA9, 0x18,             /* LDA #$18 */
         0x8D, 0x01, 0x20,       /* STA $2001: show bg/sprites */
-        0x4C, 0x13, 0xE0        /* JMP $E013 */
+        0x4C, 0x18, 0xE0        /* JMP $E018 */
     };
     uint8_t irq_handler[] = {
         0xA9, 0x00,             /* LDA #$00 */
@@ -233,6 +235,58 @@ static int test_mapper4_bank_switch_and_irq(void)
     ok &= expect_int("mapper4 scanline irq reached handler", nes_cpu_read(&nes, 0x0020), 1);
     ok &= expect_int("mapper4 irq acknowledged", nes.mapper.mapper4_irq_pending, 0);
 
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper4_irq_requires_a12_rise(void)
+{
+    uint8_t rom[TEST_MAPPER4_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_8k_banks = TEST_MAPPER4_PRG_BANKS * 2u;
+    size_t fixed_offset = prg_offset + (prg_8k_banks - 1u) * 0x2000u;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0x58,                   /* CLI */
+        0xA9, 0x01,             /* LDA #$01 */
+        0x8D, 0x00, 0xC0,       /* STA $C000: IRQ latch */
+        0xA9, 0x00,             /* LDA #$00 */
+        0x8D, 0x01, 0xC0,       /* STA $C001: reload */
+        0x8D, 0x01, 0xE0,       /* STA $E001: enable */
+        0xA9, 0x18,             /* LDA #$18 */
+        0x8D, 0x01, 0x20,       /* STA $2001: show bg/sprites */
+        0x4C, 0x13, 0xE0        /* JMP $E013 */
+    };
+    uint8_t irq_handler[] = {
+        0xA9, 0x00,             /* LDA #$00 */
+        0x8D, 0x00, 0xE0,       /* STA $E000: disable/ack IRQ */
+        0xE6, 0x20,             /* INC $20 */
+        0x40                    /* RTI */
+    };
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER4_PRG_BANKS;
+    rom[5] = TEST_MAPPER4_CHR_BANKS;
+    rom[6] = 0x40;
+    rom[7] = 0;
+    memcpy(&rom[fixed_offset], program, sizeof(program));
+    memcpy(&rom[fixed_offset + 0x0100u], irq_handler, sizeof(irq_handler));
+    rom[fixed_offset + 0x1FFCu] = 0x00;
+    rom[fixed_offset + 0x1FFDu] = 0xE0;
+    rom[fixed_offset + 0x1FFEu] = 0x00;
+    rom[fixed_offset + 0x1FFFu] = 0xE1;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper4 no a12 rom", result, NES_RESULT_OK);
+    nes_run_frame(&nes);
+    ok &= expect_int("mapper4 irq waits for a12 rise", nes_cpu_read(&nes, 0x0020), 0);
     nes_shutdown(&nes);
     return ok;
 }
@@ -1756,6 +1810,7 @@ int main(int argc, char **argv)
     ok &= test_mapper0_load_and_map();
     ok &= test_mapper3_chr_bank_switch();
     ok &= test_mapper4_bank_switch_and_irq();
+    ok &= test_mapper4_irq_requires_a12_rise();
     ok &= test_mapper10_mmc4_latches();
     ok &= test_mapper19_bank_switch_nt_and_irq();
     ok &= test_cpu_executes_program();
