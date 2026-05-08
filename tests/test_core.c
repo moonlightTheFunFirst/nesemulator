@@ -1532,12 +1532,21 @@ static int test_apu_frame_counter_event_timing(void)
     result = nes_load_rom_image(&nes, rom, sizeof(rom));
     ok &= expect_int("load apu frame timing rom", result, NES_RESULT_OK);
     nes_cpu_write(&nes, 0x4017, 0x00);
-    nes_apu_clock_frame_counter(&nes, 29828);
+    nes_apu_clock_frame_counter(&nes, 29827);
     ok &= expect_int("frame irq before event", nes.apu.frame_irq, 0);
     nes_apu_clock_frame_counter(&nes, 1);
-    ok &= expect_int("frame irq at event", nes.apu.frame_irq, 1);
+    ok &= expect_int("frame irq first event", nes.apu.frame_irq, 1);
     ok &= expect_int("frame irq status bit", nes_cpu_read(&nes, 0x4015) & 0x40, 0x40);
     ok &= expect_int("frame irq acknowledged by status read", nes.apu.frame_irq, 0);
+    nes_apu_clock_frame_counter(&nes, 1);
+    ok &= expect_int("frame irq second event", nes.apu.frame_irq, 1);
+    ok &= expect_int("frame irq second status bit", nes_cpu_read(&nes, 0x4015) & 0x40, 0x40);
+    ok &= expect_int("frame irq second acknowledge", nes.apu.frame_irq, 0);
+    nes_apu_clock_frame_counter(&nes, 1);
+    ok &= expect_int("frame irq third event", nes.apu.frame_irq, 1);
+    ok &= expect_int("frame irq third status bit", nes_cpu_read(&nes, 0x4015) & 0x40, 0x40);
+    ok &= expect_int("frame irq third acknowledge", nes.apu.frame_irq, 0);
+    ok &= expect_int("frame counter wraps after third irq", nes.apu.frame_counter_cycles, 0);
 
     nes_cpu_write(&nes, 0x4017, 0xC0);
     nes_apu_clock_frame_counter(&nes, 37282 * 2);

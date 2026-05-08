@@ -337,15 +337,39 @@ static int apu_frame_counter_period(const NesApu *apu)
     return apu->frame_counter_mode ? 37282 : 29830;
 }
 
+static void apu_assert_frame_irq(NesEmu *nes)
+{
+    NesApu *apu = &nes->apu;
+
+    if (!apu->frame_counter_mode && !apu->frame_irq_inhibit) {
+        apu->frame_irq = 1;
+        nes_update_irq(nes);
+    }
+}
+
 static int apu_next_frame_counter_event(const NesApu *apu)
 {
-    const int *events = apu->frame_counter_mode ? frame_counter_5_step_events : frame_counter_4_step_events;
     int i;
 
-    for (i = 0; i < 4; ++i) {
-        if (apu->frame_counter_cycles < events[i]) {
-            return events[i];
+    if (apu->frame_counter_mode) {
+        for (i = 0; i < 4; ++i) {
+            if (apu->frame_counter_cycles < frame_counter_5_step_events[i]) {
+                return frame_counter_5_step_events[i];
+            }
         }
+        return apu_frame_counter_period(apu);
+    }
+
+    for (i = 0; i < 3; ++i) {
+        if (apu->frame_counter_cycles < frame_counter_4_step_events[i]) {
+            return frame_counter_4_step_events[i];
+        }
+    }
+    if (apu->frame_counter_cycles < frame_counter_4_step_events[3] - 1) {
+        return frame_counter_4_step_events[3] - 1;
+    }
+    if (apu->frame_counter_cycles < frame_counter_4_step_events[3]) {
+        return frame_counter_4_step_events[3];
     }
     return apu_frame_counter_period(apu);
 }
@@ -384,14 +408,13 @@ static void apu_clock_frame_event(NesEmu *nes)
     } else if (cycle == frame_counter_4_step_events[2]) {
         apu_clock_quarter_frame(apu);
         apu->frame_step = 3;
+    } else if (cycle == frame_counter_4_step_events[3] - 1) {
+        apu_assert_frame_irq(nes);
     } else if (cycle == frame_counter_4_step_events[3]) {
         apu_clock_quarter_frame(apu);
         apu_clock_half_frame(apu);
         apu->frame_step = 4;
-        if (!apu->frame_irq_inhibit) {
-            apu->frame_irq = 1;
-            nes_update_irq(nes);
-        }
+        apu_assert_frame_irq(nes);
     }
 }
 
@@ -417,6 +440,7 @@ void nes_apu_clock_frame_counter(NesEmu *nes, int cycles)
         apu->frame_counter_cycles += step;
         cycles -= step;
         if (apu->frame_counter_cycles >= apu_frame_counter_period(apu)) {
+            apu_assert_frame_irq(nes);
             apu->frame_counter_cycles = 0;
             apu->frame_step = 0;
         } else {
