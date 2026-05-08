@@ -86,10 +86,17 @@ struct NesMapper {
     uint8_t mapper4_irq_reload;
     uint8_t mapper4_irq_enabled;
     uint8_t mapper4_irq_pending;
+    uint8_t mapper76_bank_select;
+    uint8_t mapper76_regs[8];
     uint8_t mapper10_prg_bank;
     uint8_t mapper10_chr_banks[4];
     uint8_t mapper10_latch0;
     uint8_t mapper10_latch1;
+    uint8_t mapper95_bank_select;
+    uint8_t mapper95_regs[8];
+    uint8_t mapper154_bank_select;
+    uint8_t mapper154_regs[8];
+    uint8_t mapper154_mirroring;
     uint8_t mapper206_bank_select;
     uint8_t mapper206_regs[8];
     uint8_t mapper88_bank_select;

@@ -14,8 +14,11 @@ add_library(nesemu_core
     src/core/mapper/mapper0.c
     src/core/mapper/mapper3.c
     src/core/mapper/mapper4.c
+    src/core/mapper/mapper76.c
     src/core/mapper/mapper10.c
     src/core/mapper/mapper19.c
+    src/core/mapper/mapper95.c
+    src/core/mapper/mapper154.c
     src/core/mapper/mapper206.c
     src/core/mapper/mapper88.c
 )

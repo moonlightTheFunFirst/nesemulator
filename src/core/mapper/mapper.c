@@ -2,8 +2,11 @@
 #include "mapper0.h"
 #include "mapper3.h"
 #include "mapper4.h"
+#include "mapper76.h"
 #include "mapper10.h"
 #include "mapper19.h"
+#include "mapper95.h"
+#include "mapper154.h"
 #include "mapper206.h"
 #include "mapper88.h"
 
@@ -15,8 +18,11 @@ const NesMapperOps *nes_mapper_ops_for_id(uint8_t mapper_id)
         &nes_mapper0_ops,
         &nes_mapper3_ops,
         &nes_mapper4_ops,
+        &nes_mapper76_ops,
         &nes_mapper10_ops,
         &nes_mapper19_ops,
+        &nes_mapper95_ops,
+        &nes_mapper154_ops,
         &nes_mapper206_ops,
         &nes_mapper88_ops
     };

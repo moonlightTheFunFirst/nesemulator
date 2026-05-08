@@ -18,6 +18,18 @@
 #define TEST_MAPPER19_CHR_BANKS 2u
 #define TEST_MAPPER19_ROM_SIZE \
     (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER19_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER19_CHR_BANKS)
+#define TEST_MAPPER76_PRG_BANKS 8u
+#define TEST_MAPPER76_CHR_BANKS 16u
+#define TEST_MAPPER76_ROM_SIZE \
+    (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER76_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER76_CHR_BANKS)
+#define TEST_MAPPER95_PRG_BANKS 8u
+#define TEST_MAPPER95_CHR_BANKS 8u
+#define TEST_MAPPER95_ROM_SIZE \
+    (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER95_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER95_CHR_BANKS)
+#define TEST_MAPPER154_PRG_BANKS 8u
+#define TEST_MAPPER154_CHR_BANKS 16u
+#define TEST_MAPPER154_ROM_SIZE \
+    (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER154_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER154_CHR_BANKS)
 #define TEST_MAPPER206_PRG_BANKS 8u
 #define TEST_MAPPER206_CHR_BANKS 8u
 #define TEST_MAPPER206_ROM_SIZE \
@@ -1150,6 +1162,199 @@ static int test_ppustatus_read_sees_vblank_start_during_instruction(void)
     return ok;
 }
 
+static int test_mapper76_namcot3446_banks(void)
+{
+    uint8_t rom[TEST_MAPPER76_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_size = NESEMU_PRG_BANK_SIZE * TEST_MAPPER76_PRG_BANKS;
+    size_t chr_offset = 16u + prg_size;
+    size_t prg_8k_banks = TEST_MAPPER76_PRG_BANKS * 2u;
+    size_t chr_2k_banks = TEST_MAPPER76_CHR_BANKS * 4u;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    size_t bank;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER76_PRG_BANKS;
+    rom[5] = TEST_MAPPER76_CHR_BANKS;
+    rom[6] = 0xC1;
+    rom[7] = 0x40;
+    for (bank = 0; bank < prg_8k_banks; ++bank) {
+        rom[prg_offset + bank * 0x2000u] = (uint8_t)(0x80u + bank);
+    }
+    for (bank = 0; bank < chr_2k_banks; ++bank) {
+        rom[chr_offset + bank * 0x0800u] = (uint8_t)bank;
+        rom[chr_offset + bank * 0x0800u + 0x07FFu] = (uint8_t)(0x80u | (bank & 0x7Fu));
+    }
+    rom[prg_offset + (prg_8k_banks - 1u) * 0x2000u + 0x1FFCu] = 0x00;
+    rom[prg_offset + (prg_8k_banks - 1u) * 0x2000u + 0x1FFDu] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper76", result, NES_RESULT_OK);
+    ok &= expect_int("mapper76 id", nes.rom.mapper_id, 76);
+    ok &= expect_int("mapper76 initial 8000", nes_cpu_read(&nes, 0x8000), 0x80);
+    ok &= expect_int("mapper76 initial A000", nes_cpu_read(&nes, 0xA000), 0x81);
+    ok &= expect_int("mapper76 fixed C000", nes_cpu_read(&nes, 0xC000), 0x8E);
+    ok &= expect_int("mapper76 fixed E000", nes_cpu_read(&nes, 0xE000), 0x8F);
+
+    nes_cpu_write(&nes, 0x8000, 0x06);
+    nes_cpu_write(&nes, 0x8001, 0x03);
+    ok &= expect_int("mapper76 prg r6 bank", nes_cpu_read(&nes, 0x8000), 0x83);
+    nes_cpu_write(&nes, 0x8000, 0x07);
+    nes_cpu_write(&nes, 0x8001, 0x04);
+    ok &= expect_int("mapper76 prg r7 bank", nes_cpu_read(&nes, 0xA000), 0x84);
+
+    nes_cpu_write(&nes, 0x8000, 0x02);
+    nes_cpu_write(&nes, 0x8001, 0x05);
+    ok &= expect_int("mapper76 chr r2 bank", nes_ppu_read(&nes, 0x0000), 0x05);
+    ok &= expect_int("mapper76 chr r2 end", nes_ppu_read(&nes, 0x07FF), 0x85);
+    nes_cpu_write(&nes, 0x8000, 0x05);
+    nes_cpu_write(&nes, 0x8001, 0x3E);
+    ok &= expect_int("mapper76 chr r5 bank", nes_ppu_read(&nes, 0x1800), 0x3E);
+    ok &= expect_int("mapper76 chr r5 end", nes_ppu_read(&nes, 0x1FFF), 0xBE);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper95_namcot3425_banks_and_mirroring(void)
+{
+    uint8_t rom[TEST_MAPPER95_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_size = NESEMU_PRG_BANK_SIZE * TEST_MAPPER95_PRG_BANKS;
+    size_t chr_offset = 16u + prg_size;
+    size_t prg_8k_banks = TEST_MAPPER95_PRG_BANKS * 2u;
+    size_t chr_1k_banks = TEST_MAPPER95_CHR_BANKS * 8u;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    size_t bank;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER95_PRG_BANKS;
+    rom[5] = TEST_MAPPER95_CHR_BANKS;
+    rom[6] = 0xF1;
+    rom[7] = 0x50;
+    for (bank = 0; bank < prg_8k_banks; ++bank) {
+        rom[prg_offset + bank * 0x2000u] = (uint8_t)(0x80u + bank);
+    }
+    for (bank = 0; bank < chr_1k_banks; ++bank) {
+        rom[chr_offset + bank * 0x0400u] = (uint8_t)bank;
+        rom[chr_offset + bank * 0x0400u + 0x03FFu] = (uint8_t)(0x80u | (bank & 0x7Fu));
+    }
+    rom[prg_offset + (prg_8k_banks - 1u) * 0x2000u + 0x1FFCu] = 0x00;
+    rom[prg_offset + (prg_8k_banks - 1u) * 0x2000u + 0x1FFDu] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper95", result, NES_RESULT_OK);
+    ok &= expect_int("mapper95 id", nes.rom.mapper_id, 95);
+    ok &= expect_int("mapper95 fixed C000", nes_cpu_read(&nes, 0xC000), 0x8E);
+    ok &= expect_int("mapper95 fixed E000", nes_cpu_read(&nes, 0xE000), 0x8F);
+
+    nes_cpu_write(&nes, 0x8000, 0x06);
+    nes_cpu_write(&nes, 0x8001, 0x03);
+    ok &= expect_int("mapper95 prg r6 bank", nes_cpu_read(&nes, 0x8000), 0x83);
+    nes_cpu_write(&nes, 0x8000, 0x02);
+    nes_cpu_write(&nes, 0x8001, 0x25);
+    ok &= expect_int("mapper95 chr r2 keeps bank bit 5", nes_ppu_read(&nes, 0x1000), 0x25);
+
+    nes_cpu_write(&nes, 0x8000, 0x00);
+    nes_cpu_write(&nes, 0x8001, 0x00);
+    nes_ppu_write(&nes, 0x2000, 0x11);
+    ok &= expect_int("mapper95 nt r0 low mirrors 2400", nes_ppu_read(&nes, 0x2400), 0x11);
+    nes_cpu_write(&nes, 0x8000, 0x00);
+    nes_cpu_write(&nes, 0x8001, 0x20);
+    ok &= expect_int("mapper95 nt r0 high is separate", nes_ppu_read(&nes, 0x2000), 0);
+    nes_ppu_write(&nes, 0x2000, 0x22);
+    ok &= expect_int("mapper95 nt r0 high mirrors 2400", nes_ppu_read(&nes, 0x2400), 0x22);
+    nes_cpu_write(&nes, 0x8000, 0x00);
+    nes_cpu_write(&nes, 0x8001, 0x00);
+    ok &= expect_int("mapper95 nt r0 low preserved", nes_ppu_read(&nes, 0x2000), 0x11);
+
+    nes_cpu_write(&nes, 0x8000, 0x01);
+    nes_cpu_write(&nes, 0x8001, 0x20);
+    nes_ppu_write(&nes, 0x2801, 0x33);
+    ok &= expect_int("mapper95 nt r1 high mirrors 2c01", nes_ppu_read(&nes, 0x2C01), 0x33);
+    nes_cpu_write(&nes, 0x8000, 0x01);
+    nes_cpu_write(&nes, 0x8001, 0x00);
+    ok &= expect_int("mapper95 nt r1 low is separate", nes_ppu_read(&nes, 0x2801), 0);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper154_namcot3453_banks_and_mirroring(void)
+{
+    uint8_t rom[TEST_MAPPER154_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_size = NESEMU_PRG_BANK_SIZE * TEST_MAPPER154_PRG_BANKS;
+    size_t chr_offset = 16u + prg_size;
+    size_t prg_8k_banks = TEST_MAPPER154_PRG_BANKS * 2u;
+    size_t chr_1k_banks = TEST_MAPPER154_CHR_BANKS * 8u;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    size_t bank;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER154_PRG_BANKS;
+    rom[5] = TEST_MAPPER154_CHR_BANKS;
+    rom[6] = 0xA0;
+    rom[7] = 0x90;
+    for (bank = 0; bank < prg_8k_banks; ++bank) {
+        rom[prg_offset + bank * 0x2000u] = (uint8_t)(0x80u + bank);
+    }
+    for (bank = 0; bank < chr_1k_banks; ++bank) {
+        rom[chr_offset + bank * 0x0400u] = (uint8_t)bank;
+        rom[chr_offset + bank * 0x0400u + 0x03FFu] = (uint8_t)(0x80u | (bank & 0x7Fu));
+    }
+    rom[prg_offset + (prg_8k_banks - 1u) * 0x2000u + 0x1FFCu] = 0x00;
+    rom[prg_offset + (prg_8k_banks - 1u) * 0x2000u + 0x1FFDu] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper154", result, NES_RESULT_OK);
+    ok &= expect_int("mapper154 id", nes.rom.mapper_id, 154);
+    ok &= expect_int("mapper154 fixed C000", nes_cpu_read(&nes, 0xC000), 0x8E);
+    ok &= expect_int("mapper154 fixed E000", nes_cpu_read(&nes, 0xE000), 0x8F);
+
+    nes_cpu_write(&nes, 0x8000, 0x00);
+    nes_cpu_write(&nes, 0x8001, 0x05);
+    ok &= expect_int("mapper154 chr r0 even bank", nes_ppu_read(&nes, 0x0000), 0x04);
+    ok &= expect_int("mapper154 chr r0 second bank", nes_ppu_read(&nes, 0x0400), 0x05);
+    nes_cpu_write(&nes, 0x8000, 0x02);
+    nes_cpu_write(&nes, 0x8001, 0x09);
+    ok &= expect_int("mapper154 chr r2 upper half", nes_ppu_read(&nes, 0x1000), 0x49);
+
+    nes_cpu_write(&nes, 0xA000, 0x00);
+    nes_ppu_write(&nes, 0x2000, 0x44);
+    ok &= expect_int("mapper154 one-screen A mirrors 2400", nes_ppu_read(&nes, 0x2400), 0x44);
+    nes_cpu_write(&nes, 0xA000, 0x40);
+    ok &= expect_int("mapper154 one-screen B is separate", nes_ppu_read(&nes, 0x2000), 0);
+    nes_ppu_write(&nes, 0x2000, 0x55);
+    ok &= expect_int("mapper154 one-screen B mirrors 2400", nes_ppu_read(&nes, 0x2400), 0x55);
+    nes_cpu_write(&nes, 0xE000, 0x00);
+    ok &= expect_int("mapper154 one-screen A preserved", nes_ppu_read(&nes, 0x2000), 0x44);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_mapper206_namco108_banks(void)
 {
     uint8_t rom[TEST_MAPPER206_ROM_SIZE];
@@ -2223,8 +2428,11 @@ int main(int argc, char **argv)
     ok &= test_mapper3_chr_bank_switch();
     ok &= test_mapper4_bank_switch_and_irq();
     ok &= test_mapper4_irq_requires_a12_rise();
+    ok &= test_mapper76_namcot3446_banks();
     ok &= test_mapper10_mmc4_latches();
     ok &= test_mapper19_bank_switch_nt_and_irq();
+    ok &= test_mapper95_namcot3425_banks_and_mirroring();
+    ok &= test_mapper154_namcot3453_banks_and_mirroring();
     ok &= test_mapper206_namco108_banks();
     ok &= test_mapper206_prg_bank_mask();
     ok &= test_mapper88_namco118_banks();
