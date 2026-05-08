@@ -47,6 +47,7 @@ static int audio_has_signal(const int16_t *samples, size_t count)
 }
 
 void nes_apu_clock_frame_counter(NesEmu *nes, int cycles);
+int nes_cpu_step(NesEmu *nes);
 
 static int test_mapper0_load_and_map(void)
 {
@@ -957,6 +958,106 @@ static int test_ppustatus_read_uses_instruction_cycle(void)
     return ok;
 }
 
+static int test_ppustatus_read_sees_vblank_start_during_instruction(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t program[] = {
+        0x2C, 0x02, 0x20, /* BIT $2002 */
+        0x02              /* KIL */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, sizeof(program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load ppustatus vblank timing rom", result, NES_RESULT_OK);
+    nes.ppu.scanline = 240;
+    nes.ppu.cycle = 337;
+    nes.ppu.ctrl = 0x80u;
+    nes.ppu.status = 0;
+    nes.ppu.frame_ready = 0;
+    ok &= expect_int("bit vblank cycles", nes_cpu_step(&nes), 4);
+    ok &= expect_int("bit sees vblank at read cycle", nes.cpu.p & 0x80, 0x80);
+    ok &= expect_int("vblank read marks frame ready", nes.ppu.frame_ready, 1);
+    ok &= expect_int("vblank read clears status", nes.ppu.status & 0x80, 0);
+    ok &= expect_int("vblank read suppresses pending nmi", nes.cpu.nmi_pending, 0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_inc_dec_flags_use_written_value(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t inc_program[] = {
+        0xEE, 0x02, 0x20, /* INC $2002 */
+        0x08,             /* PHP */
+        0x68,             /* PLA */
+        0x85, 0x20,       /* STA $20 */
+        0x02              /* KIL */
+    };
+    uint8_t dec_program[] = {
+        0xCE, 0x02, 0x20, /* DEC $2002 */
+        0x08,             /* PHP */
+        0x68,             /* PLA */
+        0x85, 0x20,       /* STA $20 */
+        0x02              /* KIL */
+    };
+
+    memset(rom, 0xEA, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], inc_program, sizeof(inc_program));
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load inc ppustatus rom", result, NES_RESULT_OK);
+    nes.ppu.status = 0x80u;
+    nes_cpu_step(&nes);
+    nes_cpu_step(&nes);
+    nes_cpu_step(&nes);
+    nes_cpu_step(&nes);
+    ok &= expect_int("inc flags use written value", nes_cpu_read(&nes, 0x0020) & 0x82, 0x80);
+    nes_shutdown(&nes);
+
+    memcpy(&rom[16], dec_program, sizeof(dec_program));
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load dec ppustatus rom", result, NES_RESULT_OK);
+    nes.ppu.status = 0x01u;
+    nes_cpu_step(&nes);
+    nes_cpu_step(&nes);
+    nes_cpu_step(&nes);
+    nes_cpu_step(&nes);
+    ok &= expect_int("dec flags use written value", nes_cpu_read(&nes, 0x0020) & 0x82, 0x02);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_unofficial_opcodes(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1533,6 +1634,8 @@ int main(int argc, char **argv)
     ok &= test_ppu_render_uses_v_scroll_address();
     ok &= test_sprite_behind_background_blocks_later_sprites();
     ok &= test_ppustatus_read_uses_instruction_cycle();
+    ok &= test_ppustatus_read_sees_vblank_start_during_instruction();
+    ok &= test_inc_dec_flags_use_written_value();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();

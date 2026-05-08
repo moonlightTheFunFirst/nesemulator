@@ -384,12 +384,22 @@ static int ppu_event_between(int start, int end, int event)
     return event > start || event <= end;
 }
 
-static void ppu_apply_visible_status_before_read(NesEmu *nes, int cpu_cycles)
+static void ppu_enter_vblank(NesEmu *nes)
+{
+    nes->ppu.status |= 0x80u;
+    nes->ppu.frame_ready = 1;
+    if ((nes->ppu.ctrl & 0x80u) != 0) {
+        nes->cpu.nmi_pending = 1;
+        nes->cpu.nmi_delay = 1;
+    }
+}
+
+static void ppu_apply_status_before_read(NesEmu *nes, int cpu_cycles)
 {
     int start;
     int end;
 
-    if (cpu_cycles <= 0 || (nes->ppu.status & 0x40u) != 0 || nes->ppu.sprite0_hit_position < 0) {
+    if (cpu_cycles <= 0) {
         return;
     }
     start = nes->ppu.scanline * PPU_CYCLES_PER_SCANLINE + nes->ppu.cycle;
@@ -397,16 +407,21 @@ static void ppu_apply_visible_status_before_read(NesEmu *nes, int cpu_cycles)
     while (end >= PPU_CYCLES_PER_FRAME) {
         end -= PPU_CYCLES_PER_FRAME;
     }
-    if (ppu_event_between(start, end, nes->ppu.sprite0_hit_position)) {
+    if ((nes->ppu.status & 0x40u) == 0 &&
+        nes->ppu.sprite0_hit_position >= 0 &&
+        ppu_event_between(start, end, nes->ppu.sprite0_hit_position)) {
         nes->ppu.status |= 0x40u;
         nes->ppu.sprite0_hit_position = -1;
+    }
+    if ((nes->ppu.status & 0x80u) == 0 && ppu_event_between(start, end, PPU_VBLANK_EVENT)) {
+        ppu_enter_vblank(nes);
     }
 }
 
 uint8_t nes_cpu_bus_read_delayed(NesEmu *nes, uint16_t address, int cpu_cycles)
 {
     if (address >= 0x2000u && address < 0x4000u && (address & 7u) == 2u) {
-        ppu_apply_visible_status_before_read(nes, cpu_cycles);
+        ppu_apply_status_before_read(nes, cpu_cycles);
     }
     return nes_cpu_bus_read(nes, address);
 }
@@ -794,11 +809,8 @@ static void ppu_process_current_cycle(NesEmu *nes)
         }
     }
     if (nes->ppu.scanline == 241 && nes->ppu.cycle == 1) {
-        nes->ppu.status |= 0x80u;
-        nes->ppu.frame_ready = 1;
-        if ((nes->ppu.ctrl & 0x80u) != 0) {
-            nes->cpu.nmi_pending = 1;
-            nes->cpu.nmi_delay = 1;
+        if (!nes->ppu.frame_ready) {
+            ppu_enter_vblank(nes);
         }
     }
     if (nes->ppu.scanline == 261 && nes->ppu.cycle == 1) {

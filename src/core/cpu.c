@@ -286,6 +286,7 @@ static void cpu_service_irq(NesEmu *nes)
 int nes_cpu_step(NesEmu *nes)
 {
     uint8_t opcode;
+    uint8_t value;
     uint16_t address;
     int page_crossed = 0;
     int cycles = 0;
@@ -1132,8 +1133,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xC6:
         address = addr_zp(nes);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) - 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) - 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 5;
         break;
     case 0xC7:
@@ -1176,8 +1178,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xCE:
         address = addr_abs(nes);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) - 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) - 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 6;
         break;
     case 0xCF:
@@ -1202,8 +1205,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xD6:
         address = addr_zpx(nes);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) - 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) - 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 6;
         break;
     case 0xD7:
@@ -1226,8 +1230,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xDE:
         address = addr_absx(nes, NULL);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) - 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) - 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 7;
         break;
     case 0xDB:
@@ -1260,8 +1265,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xE6:
         address = addr_zp(nes);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) + 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) + 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 5;
         break;
     case 0xE7:
@@ -1291,8 +1297,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xEE:
         address = addr_abs(nes);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) + 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) + 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 6;
         break;
     case 0xEF:
@@ -1317,8 +1324,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xF6:
         address = addr_zpx(nes);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) + 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) + 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 6;
         break;
     case 0xF7:
@@ -1341,8 +1349,9 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xFE:
         address = addr_absx(nes, NULL);
-        nes_cpu_bus_write(nes, address, (uint8_t)(nes_cpu_bus_read(nes, address) + 1u));
-        cpu_set_zn(nes, nes_cpu_bus_read(nes, address));
+        value = (uint8_t)(nes_cpu_bus_read(nes, address) + 1u);
+        nes_cpu_bus_write(nes, address, value);
+        cpu_set_zn(nes, value);
         cycles = 7;
         break;
     case 0xFB:
