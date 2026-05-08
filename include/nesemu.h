@@ -174,6 +174,7 @@ typedef struct NesApu {
     size_t sample_read_pos;
     size_t sample_write_pos;
     size_t sample_count;
+    int16_t last_render_sample;
     int16_t sample_buffer[NESEMU_AUDIO_BUFFER_SAMPLES];
 } NesApu;
 

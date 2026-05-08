@@ -722,6 +722,7 @@ static int apu_pop_sample(NesApu *apu, int16_t *sample)
 void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sample_rate)
 {
     size_t i;
+    int16_t sample;
 
     if (samples == NULL || sample_rate <= 0) {
         return;
@@ -733,12 +734,16 @@ void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sa
     if (sample_rate != (int)NESEMU_AUDIO_RATE) {
         for (i = 0; i < sample_count; ++i) {
             samples[i] = apu_mix_sample(nes);
+            nes->apu.last_render_sample = samples[i];
         }
         return;
     }
     for (i = 0; i < sample_count; ++i) {
-        if (!apu_pop_sample(&nes->apu, &samples[i])) {
-            samples[i] = 0;
+        if (apu_pop_sample(&nes->apu, &sample)) {
+            nes->apu.last_render_sample = sample;
+            samples[i] = sample;
+        } else {
+            samples[i] = nes->apu.last_render_sample;
         }
     }
 }

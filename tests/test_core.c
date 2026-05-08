@@ -1561,6 +1561,40 @@ static int test_apu_timer_sequences_drive_channels(void)
     return ok;
 }
 
+static int test_audio_underrun_holds_last_sample(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    int16_t samples[4];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load audio underrun rom", result, NES_RESULT_OK);
+    nes.apu.sample_count = 0;
+    nes.apu.last_render_sample = 1234;
+    nes_render_audio(&nes, samples, sizeof(samples) / sizeof(samples[0]), NESEMU_AUDIO_RATE);
+    ok &= expect_int("underrun sample 0", samples[0], 1234);
+    ok &= expect_int("underrun sample 1", samples[1], 1234);
+    ok &= expect_int("underrun sample 2", samples[2], 1234);
+    ok &= expect_int("underrun sample 3", samples[3], 1234);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_mapper19_n163_audio(void)
 {
     uint8_t rom[TEST_MAPPER19_ROM_SIZE];
@@ -1837,6 +1871,7 @@ int main(int argc, char **argv)
     ok &= test_dmc_playback_progresses();
     ok &= test_dmc_irq_status_and_acknowledge();
     ok &= test_apu_timer_sequences_drive_channels();
+    ok &= test_audio_underrun_holds_last_sample();
     ok &= test_mapper19_n163_audio();
     ok &= test_mapper19_n163_channel_count_encoding();
     ok &= test_kil_opcode_stops_cpu();
