@@ -610,11 +610,9 @@ static void apu_clock_generators(NesEmu *nes, int cycles)
 
 static int triangle_sample(const NesApu *apu)
 {
-    const uint8_t *r = &apu->regs[8];
     int enabled = (apu->status & 0x04u) != 0;
-    int timer = r[2] | ((r[3] & 0x07) << 8);
 
-    if (!enabled || apu->length_counter[2] == 0 || apu->triangle_linear_counter == 0 || timer < 2) {
+    if (!enabled) {
         return 0;
     }
     return triangle_sequence[apu->triangle_sequence_step & 31u];

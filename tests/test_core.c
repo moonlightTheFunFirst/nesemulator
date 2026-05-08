@@ -1959,6 +1959,36 @@ static int test_apu_bulk_clock_matches_split_clock(void)
     return ok;
 }
 
+static int test_triangle_output_holds_when_counters_stop(void)
+{
+    NesEmu nes;
+    int ok = 1;
+    int16_t held_sample;
+
+    nes_init(&nes);
+    nes.apu.status = 0x04u;
+    nes.apu.triangle_sequence_step = 8;
+    nes.apu.length_counter[2] = 0;
+    nes.apu.triangle_linear_counter = 0;
+    nes.apu.regs[0x0A] = 0x10u;
+    nes_apu_clock_audio(&nes, 41);
+    held_sample = nes.apu.sample_buffer[nes.apu.sample_read_pos];
+    ok &= expect_int("triangle hold still outputs current step", held_sample != 0, 1);
+    nes_shutdown(&nes);
+
+    nes_init(&nes);
+    nes.apu.triangle_sequence_step = 8;
+    nes.apu.length_counter[2] = 1;
+    nes.apu.triangle_linear_counter = 1;
+    nes.apu.regs[0x0A] = 0x10u;
+    nes_apu_clock_audio(&nes, 41);
+    ok &= expect_int("triangle disabled outputs zero",
+                     nes.apu.sample_buffer[nes.apu.sample_read_pos],
+                     0);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_apu_frame_irq_drives_irq_vector(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -2507,6 +2537,7 @@ int main(int argc, char **argv)
     ok &= test_pulse_sweep_updates_timer();
     ok &= test_apu_timer_boundary_and_status_mask();
     ok &= test_apu_bulk_clock_matches_split_clock();
+    ok &= test_triangle_output_holds_when_counters_stop();
     ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_apu_frame_counter_event_timing();
     ok &= test_dmc_playback_progresses();
