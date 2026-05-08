@@ -77,3 +77,68 @@ void nes_mapper3_chr_write(NesMapper *mapper, uint16_t address, uint8_t value)
         mapper->chr_mem[offset] = value;
     }
 }
+
+static void mapper3_init_ops(NesMapper *mapper, NesMirroring mirroring)
+{
+    (void)mirroring;
+    nes_mapper3_init(mapper);
+}
+
+static int mapper3_cpu_read(NesEmu *nes, uint16_t address, uint8_t *value)
+{
+    if (nes == NULL || value == NULL) {
+        return 0;
+    }
+    if (address >= 0x6000u && address <= 0x7FFFu) {
+        *value = nes->mapper.prg_ram[address - 0x6000u];
+        return 1;
+    }
+    if (address >= 0x8000u) {
+        *value = nes_mapper3_prg_read(&nes->mapper, address);
+        return 1;
+    }
+    return 0;
+}
+
+static int mapper3_cpu_write(NesEmu *nes, uint16_t address, uint8_t value)
+{
+    if (nes == NULL) {
+        return 0;
+    }
+    if (address >= 0x6000u && address <= 0x7FFFu) {
+        nes->mapper.prg_ram[address - 0x6000u] = value;
+        return 1;
+    }
+    if (address >= 0x8000u) {
+        nes_mapper3_prg_write(&nes->mapper, address, value);
+        return 1;
+    }
+    return 0;
+}
+
+static int mapper3_ppu_read(NesEmu *nes, uint16_t address, uint8_t *value)
+{
+    if (nes == NULL || value == NULL || address >= 0x2000u) {
+        return 0;
+    }
+    *value = nes_mapper3_chr_read(&nes->mapper, address);
+    return 1;
+}
+
+static int mapper3_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
+{
+    if (nes == NULL || address >= 0x2000u) {
+        return 0;
+    }
+    nes_mapper3_chr_write(&nes->mapper, address, value);
+    return 1;
+}
+
+const NesMapperOps nes_mapper3_ops = {
+    3,
+    mapper3_init_ops,
+    mapper3_cpu_read,
+    mapper3_cpu_write,
+    mapper3_ppu_read,
+    mapper3_ppu_write
+};

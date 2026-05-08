@@ -448,3 +448,77 @@ double nes_mapper19_audio_sample(const NesEmu *nes)
     }
     return (double)total / (double)channel_count;
 }
+
+static void mapper19_init_ops(NesMapper *mapper, NesMirroring mirroring)
+{
+    nes_mapper19_init(mapper, mirroring);
+}
+
+static int mapper19_cpu_read(NesEmu *nes, uint16_t address, uint8_t *value)
+{
+    if (nes == NULL || value == NULL) {
+        return 0;
+    }
+    if (address >= 0x4800u && address <= 0x5FFFu) {
+        *value = nes_mapper19_cpu_read(nes, address);
+        return 1;
+    }
+    if (address >= 0x6000u && address <= 0x7FFFu) {
+        *value = nes->mapper.prg_ram[address - 0x6000u];
+        return 1;
+    }
+    if (address >= 0x8000u) {
+        *value = nes_mapper19_cpu_read(nes, address);
+        return 1;
+    }
+    return 0;
+}
+
+static int mapper19_cpu_write(NesEmu *nes, uint16_t address, uint8_t value)
+{
+    if (nes == NULL) {
+        return 0;
+    }
+    if (address >= 0x4800u && address <= 0x5FFFu) {
+        nes_mapper19_cpu_write(nes, address, value);
+        return 1;
+    }
+    if (address >= 0x6000u && address <= 0x7FFFu) {
+        if (nes_mapper19_prg_ram_write_enabled(&nes->mapper, address)) {
+            nes->mapper.prg_ram[address - 0x6000u] = value;
+        }
+        return 1;
+    }
+    if (address >= 0x8000u) {
+        nes_mapper19_cpu_write(nes, address, value);
+        return 1;
+    }
+    return 0;
+}
+
+static int mapper19_ppu_read(NesEmu *nes, uint16_t address, uint8_t *value)
+{
+    if (nes == NULL || value == NULL || address >= 0x3F00u) {
+        return 0;
+    }
+    *value = nes_mapper19_ppu_read(nes, address);
+    return 1;
+}
+
+static int mapper19_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
+{
+    if (nes == NULL || address >= 0x3F00u) {
+        return 0;
+    }
+    nes_mapper19_ppu_write(nes, address, value);
+    return 1;
+}
+
+const NesMapperOps nes_mapper19_ops = {
+    19,
+    mapper19_init_ops,
+    mapper19_cpu_read,
+    mapper19_cpu_write,
+    mapper19_ppu_read,
+    mapper19_ppu_write
+};

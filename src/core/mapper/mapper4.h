@@ -12,4 +12,6 @@ uint8_t nes_mapper4_chr_read(const NesMapper *mapper, uint16_t address);
 void nes_mapper4_chr_write(NesMapper *mapper, uint16_t address, uint8_t value);
 void nes_mapper4_clock_a12_rising(NesEmu *nes);
 
+extern const NesMapperOps nes_mapper4_ops;
+
 #endif

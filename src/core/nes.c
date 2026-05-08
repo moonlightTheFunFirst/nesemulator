@@ -1,8 +1,7 @@
 #include "nes_internal.h"
 #include "apu.h"
-#include "mapper/mapper3.h"
+#include "mapper/mapper.h"
 #include "mapper/mapper4.h"
-#include "mapper/mapper10.h"
 #include "mapper/mapper19.h"
 
 #include <stdlib.h>
@@ -119,28 +118,16 @@ static uint16_t nametable_index(const NesEmu *nes, uint16_t address)
 
 uint8_t nes_ppu_read(NesEmu *nes, uint16_t address)
 {
+    uint8_t value;
+
     address &= 0x3FFFu;
-    if (address < 0x2000u) {
-        if (!nes->rom_loaded || nes->mapper.chr_mem_size == 0) {
-            return 0xFFu;
-        }
-        if (nes->rom.mapper_id == 19u) {
-            return nes_mapper19_ppu_read(nes, address);
-        }
-        if (nes->rom.mapper_id == 3u) {
-            return nes_mapper3_chr_read(&nes->mapper, address);
-        }
-        if (nes->rom.mapper_id == 4u) {
-            return nes_mapper4_chr_read(&nes->mapper, address);
-        }
-        if (nes->rom.mapper_id == 10u) {
-            return nes_mapper10_ppu_read(nes, address);
-        }
-        return nes->mapper.chr_mem[address % nes->mapper.chr_mem_size];
-    }
     if (address < 0x3F00u) {
-        if (nes->rom_loaded && nes->rom.mapper_id == 19u) {
-            return nes_mapper19_ppu_read(nes, address);
+        if (nes->rom_loaded && nes->mapper.ops != NULL && nes->mapper.ops->ppu_read != NULL &&
+            nes->mapper.ops->ppu_read(nes, address, &value)) {
+            return value;
+        }
+        if (address < 0x2000u) {
+            return 0xFFu;
         }
         return nes->ppu.nametable[nametable_index(nes, address)];
     }
@@ -150,31 +137,12 @@ uint8_t nes_ppu_read(NesEmu *nes, uint16_t address)
 void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value)
 {
     address &= 0x3FFFu;
-    if (address < 0x2000u) {
-        if (nes->rom_loaded && nes->rom.mapper_id == 19u) {
-            nes_mapper19_ppu_write(nes, address, value);
-            return;
-        }
-        if (nes->rom_loaded && nes->rom.mapper_id == 3u) {
-            nes_mapper3_chr_write(&nes->mapper, address, value);
-            return;
-        }
-        if (nes->rom_loaded && nes->rom.mapper_id == 4u) {
-            nes_mapper4_chr_write(&nes->mapper, address, value);
-            return;
-        }
-        if (nes->rom_loaded && nes->rom.mapper_id == 10u) {
-            nes_mapper10_ppu_write(&nes->mapper, address, value);
-            return;
-        }
-        if (nes->rom_loaded && nes->mapper.chr_is_ram && nes->mapper.chr_mem_size != 0) {
-            nes->mapper.chr_mem[address % nes->mapper.chr_mem_size] = value;
-        }
-        return;
-    }
     if (address < 0x3F00u) {
-        if (nes->rom_loaded && nes->rom.mapper_id == 19u) {
-            nes_mapper19_ppu_write(nes, address, value);
+        if (nes->rom_loaded && nes->mapper.ops != NULL && nes->mapper.ops->ppu_write != NULL &&
+            nes->mapper.ops->ppu_write(nes, address, value)) {
+            return;
+        }
+        if (address < 0x2000u) {
             return;
         }
         nes->ppu.nametable[nametable_index(nes, address)] = value;
@@ -344,6 +312,8 @@ static void joypad_write_strobe(NesEmu *nes, uint8_t value)
 
 uint8_t nes_cpu_bus_read(NesEmu *nes, uint16_t address)
 {
+    uint8_t value;
+
     if (address < 0x2000u) {
         return nes->ram[address & 0x07FFu];
     }
@@ -359,32 +329,9 @@ uint8_t nes_cpu_bus_read(NesEmu *nes, uint16_t address)
     if (address == 0x4017u) {
         return joypad_read(&nes->joypad2);
     }
-    if (nes->rom.mapper_id == 19u && address >= 0x4800u && address <= 0x5FFFu) {
-        return nes_mapper19_cpu_read(nes, address);
-    }
-    if (address >= 0x6000u && address <= 0x7FFFu) {
-        return nes->mapper.prg_ram[address - 0x6000u];
-    }
-    if (address >= 0x8000u && nes->mapper.prg_rom_size > 0) {
-        if (nes->rom.mapper_id == 19u) {
-            return nes_mapper19_cpu_read(nes, address);
-        }
-        if (nes->rom.mapper_id == 3u) {
-            return nes_mapper3_prg_read(&nes->mapper, address);
-        }
-        if (nes->rom.mapper_id == 4u) {
-            return nes_mapper4_prg_read(&nes->mapper, address);
-        }
-        if (nes->rom.mapper_id == 10u) {
-            return nes_mapper10_prg_read(&nes->mapper, address);
-        }
-        size_t offset = (size_t)(address - 0x8000u);
-        if (nes->mapper.prg_rom_size == NESEMU_PRG_BANK_SIZE) {
-            offset %= NESEMU_PRG_BANK_SIZE;
-        }
-        if (offset < nes->mapper.prg_rom_size) {
-            return nes->mapper.prg_rom[offset];
-        }
+    if (address >= 0x4020u && nes->mapper.ops != NULL && nes->mapper.ops->cpu_read != NULL &&
+        nes->mapper.ops->cpu_read(nes, address, &value)) {
+        return value;
     }
     return 0xFFu;
 }
@@ -471,31 +418,8 @@ void nes_cpu_bus_write(NesEmu *nes, uint16_t address, uint8_t value)
         joypad_write_strobe(nes, value);
         return;
     }
-    if (nes->rom.mapper_id == 19u && address >= 0x4800u && address <= 0x5FFFu) {
-        nes_mapper19_cpu_write(nes, address, value);
-        return;
-    }
-    if (address >= 0x6000u && address <= 0x7FFFu) {
-        if (nes->rom.mapper_id == 19u && !nes_mapper19_prg_ram_write_enabled(&nes->mapper, address)) {
-            return;
-        }
-        nes->mapper.prg_ram[address - 0x6000u] = value;
-        return;
-    }
-    if (address >= 0x8000u && nes->rom.mapper_id == 3u) {
-        nes_mapper3_prg_write(&nes->mapper, address, value);
-        return;
-    }
-    if (address >= 0x8000u && nes->rom.mapper_id == 4u) {
-        nes_mapper4_prg_write(nes, address, value);
-        return;
-    }
-    if (address >= 0x8000u && nes->rom.mapper_id == 10u) {
-        nes_mapper10_prg_write(nes, address, value);
-        return;
-    }
-    if (address >= 0x8000u && nes->rom.mapper_id == 19u) {
-        nes_mapper19_cpu_write(nes, address, value);
+    if (address >= 0x4020u && nes->mapper.ops != NULL && nes->mapper.ops->cpu_write != NULL) {
+        nes->mapper.ops->cpu_write(nes, address, value);
     }
 }
 
@@ -1008,6 +932,7 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
 {
     NesRomInfo info;
     NesMapper mapper;
+    const NesMapperOps *ops;
     size_t offset;
     size_t prg_size;
     size_t chr_size;
@@ -1028,7 +953,8 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     flags6 = data[6];
     flags7 = data[7];
     mapper_id = (uint8_t)((flags6 >> 4) | (flags7 & 0xF0u));
-    if (mapper_id != 0 && mapper_id != 3u && mapper_id != 4u && mapper_id != 10u && mapper_id != 19u) {
+    ops = nes_mapper_ops_for_id(mapper_id);
+    if (ops == NULL) {
         return NES_RESULT_UNSUPPORTED_MAPPER;
     }
 
@@ -1086,14 +1012,9 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
         memcpy(mapper.chr_mem, data + offset, chr_size);
     }
     mapper.chr_mem_size = chr_size;
-    if (mapper_id == 3u) {
-        nes_mapper3_init(&mapper);
-    } else if (mapper_id == 4u) {
-        nes_mapper4_init(&mapper);
-    } else if (mapper_id == 10u) {
-        nes_mapper10_init(&mapper);
-    } else if (mapper_id == 19u) {
-        nes_mapper19_init(&mapper, info.mirroring);
+    mapper.ops = ops;
+    if (mapper.ops->init != NULL) {
+        mapper.ops->init(&mapper, info.mirroring);
     }
 
     nes_mapper_clear(&nes->mapper);

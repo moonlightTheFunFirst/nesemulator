@@ -10,6 +10,8 @@ add_library(nesemu_core
     src/core/nes.c
     src/core/cpu.c
     src/core/apu.c
+    src/core/mapper/mapper.c
+    src/core/mapper/mapper0.c
     src/core/mapper/mapper3.c
     src/core/mapper/mapper4.c
     src/core/mapper/mapper10.c

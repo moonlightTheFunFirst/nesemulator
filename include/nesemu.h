@@ -52,7 +52,25 @@ typedef struct NesRomInfo {
     NesMirroring mirroring;
 } NesRomInfo;
 
-typedef struct NesMapper {
+typedef struct NesEmu NesEmu;
+typedef struct NesMapper NesMapper;
+
+typedef int (*NesMapperCpuReadFunc)(NesEmu *nes, uint16_t address, uint8_t *value);
+typedef int (*NesMapperCpuWriteFunc)(NesEmu *nes, uint16_t address, uint8_t value);
+typedef int (*NesMapperPpuReadFunc)(NesEmu *nes, uint16_t address, uint8_t *value);
+typedef int (*NesMapperPpuWriteFunc)(NesEmu *nes, uint16_t address, uint8_t value);
+
+typedef struct NesMapperOps {
+    uint8_t mapper_id;
+    void (*init)(NesMapper *mapper, NesMirroring mirroring);
+    NesMapperCpuReadFunc cpu_read;
+    NesMapperCpuWriteFunc cpu_write;
+    NesMapperPpuReadFunc ppu_read;
+    NesMapperPpuWriteFunc ppu_write;
+} NesMapperOps;
+
+struct NesMapper {
+    const NesMapperOps *ops;
     uint8_t *prg_rom;
     size_t prg_rom_size;
     uint8_t *chr_mem;
@@ -87,7 +105,7 @@ typedef struct NesMapper {
     int16_t mapper19_audio_output[8];
     uint8_t mapper19_internal_ram[128];
     uint8_t prg_ram[NESEMU_PRG_RAM_SIZE];
-} NesMapper;
+};
 
 typedef struct NesCpu {
     uint8_t a;
@@ -184,7 +202,7 @@ typedef struct NesJoypad {
     uint8_t strobe;
 } NesJoypad;
 
-typedef struct NesEmu {
+struct NesEmu {
     NesRomInfo rom;
     NesMapper mapper;
     NesCpu cpu;
@@ -195,7 +213,7 @@ typedef struct NesEmu {
     uint8_t ram[2048];
     uint16_t reset_vector;
     uint8_t rom_loaded;
-} NesEmu;
+};
 
 void nes_init(NesEmu *nes);
 void nes_shutdown(NesEmu *nes);

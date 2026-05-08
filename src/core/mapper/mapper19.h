@@ -15,4 +15,6 @@ void nes_mapper19_clock_irq(NesEmu *nes, int cycles);
 void nes_mapper19_clock_audio(NesEmu *nes, int cycles);
 double nes_mapper19_audio_sample(const NesEmu *nes);
 
+extern const NesMapperOps nes_mapper19_ops;
+
 #endif
