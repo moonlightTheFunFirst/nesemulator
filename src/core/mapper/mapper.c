@@ -4,6 +4,7 @@
 #include "mapper4.h"
 #include "mapper10.h"
 #include "mapper19.h"
+#include "mapper88.h"
 
 #include <stddef.h>
 
@@ -14,7 +15,8 @@ const NesMapperOps *nes_mapper_ops_for_id(uint8_t mapper_id)
         &nes_mapper3_ops,
         &nes_mapper4_ops,
         &nes_mapper10_ops,
-        &nes_mapper19_ops
+        &nes_mapper19_ops,
+        &nes_mapper88_ops
     };
     size_t i;
 
