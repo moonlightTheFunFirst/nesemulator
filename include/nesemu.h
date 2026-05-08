@@ -145,6 +145,9 @@ typedef struct NesPpu {
     uint16_t pending_write_address;
     uint8_t pending_write_value;
     uint8_t pending_write;
+    int mapper4_irq_cache_scanline;
+    int mapper4_irq_cache_cycle;
+    uint8_t mapper4_irq_cache_valid;
     uint64_t frame;
     uint8_t frame_ready;
     uint32_t framebuffer[NESEMU_SCREEN_WIDTH * NESEMU_SCREEN_HEIGHT];

@@ -128,6 +128,11 @@ static uint16_t addr_indy(NesEmu *nes, int *page_crossed)
     return address;
 }
 
+static uint8_t cpu_read_operand(NesEmu *nes, uint16_t address, int cpu_cycles)
+{
+    return nes_cpu_bus_read_delayed(nes, address, cpu_cycles);
+}
+
 static void op_adc(NesEmu *nes, uint8_t value)
 {
     uint16_t sum = (uint16_t)nes->cpu.a + value + cpu_get_flag(nes, CPU_C);
@@ -963,12 +968,12 @@ int nes_cpu_step(NesEmu *nes)
         cycles = 2;
         break;
     case 0xA1:
-        nes->cpu.a = nes_cpu_bus_read(nes, addr_indx(nes));
+        nes->cpu.a = cpu_read_operand(nes, addr_indx(nes), 5);
         cpu_set_zn(nes, nes->cpu.a);
         cycles = 6;
         break;
     case 0xA3:
-        op_lax(nes, nes_cpu_bus_read(nes, addr_indx(nes)));
+        op_lax(nes, cpu_read_operand(nes, addr_indx(nes), 5));
         cycles = 6;
         break;
     case 0xA2:
@@ -1015,23 +1020,26 @@ int nes_cpu_step(NesEmu *nes)
         cycles = 2;
         break;
     case 0xAC:
-        nes->cpu.y = nes_cpu_bus_read(nes, addr_abs(nes));
+        address = addr_abs(nes);
+        nes->cpu.y = cpu_read_operand(nes, address, 3);
         cpu_set_zn(nes, nes->cpu.y);
         cycles = 4;
         break;
     case 0xAD:
         address = addr_abs(nes);
-        nes->cpu.a = nes_cpu_bus_read_delayed(nes, address, 3);
+        nes->cpu.a = cpu_read_operand(nes, address, 3);
         cpu_set_zn(nes, nes->cpu.a);
         cycles = 4;
         break;
     case 0xAE:
-        nes->cpu.x = nes_cpu_bus_read(nes, addr_abs(nes));
+        address = addr_abs(nes);
+        nes->cpu.x = cpu_read_operand(nes, address, 3);
         cpu_set_zn(nes, nes->cpu.x);
         cycles = 4;
         break;
     case 0xAF:
-        op_lax(nes, nes_cpu_bus_read(nes, addr_abs(nes)));
+        address = addr_abs(nes);
+        op_lax(nes, cpu_read_operand(nes, address, 3));
         cycles = 4;
         break;
     case 0xB0:
@@ -1039,13 +1047,13 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xB1:
         address = addr_indy(nes, &page_crossed);
-        nes->cpu.a = nes_cpu_bus_read(nes, address);
+        nes->cpu.a = cpu_read_operand(nes, address, 4 + page_crossed);
         cpu_set_zn(nes, nes->cpu.a);
         cycles = 5 + page_crossed;
         break;
     case 0xB3:
         address = addr_indy(nes, &page_crossed);
-        op_lax(nes, nes_cpu_bus_read(nes, address));
+        op_lax(nes, cpu_read_operand(nes, address, 4 + page_crossed));
         cycles = 5 + page_crossed;
         break;
     case 0xB4:
@@ -1073,7 +1081,7 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xB9:
         address = addr_absy(nes, &page_crossed);
-        nes->cpu.a = nes_cpu_bus_read(nes, address);
+        nes->cpu.a = cpu_read_operand(nes, address, 3 + page_crossed);
         cpu_set_zn(nes, nes->cpu.a);
         cycles = 4 + page_crossed;
         break;
@@ -1084,31 +1092,31 @@ int nes_cpu_step(NesEmu *nes)
         break;
     case 0xBC:
         address = addr_absx(nes, &page_crossed);
-        nes->cpu.y = nes_cpu_bus_read(nes, address);
+        nes->cpu.y = cpu_read_operand(nes, address, 3 + page_crossed);
         cpu_set_zn(nes, nes->cpu.y);
         cycles = 4 + page_crossed;
         break;
     case 0xBD:
         address = addr_absx(nes, &page_crossed);
-        nes->cpu.a = nes_cpu_bus_read(nes, address);
+        nes->cpu.a = cpu_read_operand(nes, address, 3 + page_crossed);
         cpu_set_zn(nes, nes->cpu.a);
         cycles = 4 + page_crossed;
         break;
     case 0xBE:
         address = addr_absy(nes, &page_crossed);
-        nes->cpu.x = nes_cpu_bus_read(nes, address);
+        nes->cpu.x = cpu_read_operand(nes, address, 3 + page_crossed);
         cpu_set_zn(nes, nes->cpu.x);
         cycles = 4 + page_crossed;
         break;
     case 0xBB:
         address = addr_absy(nes, &page_crossed);
-        op_lax(nes, (uint8_t)(nes_cpu_bus_read(nes, address) & nes->cpu.sp));
+        op_lax(nes, (uint8_t)(cpu_read_operand(nes, address, 3 + page_crossed) & nes->cpu.sp));
         nes->cpu.sp = nes->cpu.a;
         cycles = 4 + page_crossed;
         break;
     case 0xBF:
         address = addr_absy(nes, &page_crossed);
-        op_lax(nes, nes_cpu_bus_read(nes, address));
+        op_lax(nes, cpu_read_operand(nes, address, 3 + page_crossed));
         cycles = 4 + page_crossed;
         break;
     case 0xC0:

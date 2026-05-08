@@ -43,6 +43,11 @@ static const uint32_t nes_palette_rgb[64] = {
 
 static void ppu_step(NesEmu *nes, int ppu_cycles);
 
+static void ppu_invalidate_mapper4_irq_cache(NesPpu *ppu)
+{
+    ppu->mapper4_irq_cache_valid = 0;
+}
+
 static void nes_mapper_clear(NesMapper *mapper)
 {
     if (mapper->prg_rom != NULL) {
@@ -192,6 +197,7 @@ static void ppu_write_register(NesEmu *nes, uint16_t address, uint8_t value)
             uint8_t old_ctrl = ppu->ctrl;
 
             ppu->ctrl = value;
+            ppu_invalidate_mapper4_irq_cache(ppu);
             ppu->t = (uint16_t)((ppu->t & 0xF3FFu) | ((uint16_t)(value & 0x03u) << 10));
             if ((old_ctrl & 0x80u) == 0 && (value & 0x80u) != 0 && (ppu->status & 0x80u) != 0) {
                 nes->cpu.nmi_pending = 1;
@@ -201,12 +207,14 @@ static void ppu_write_register(NesEmu *nes, uint16_t address, uint8_t value)
         break;
     case 1:
         ppu->mask = value;
+        ppu_invalidate_mapper4_irq_cache(ppu);
         break;
     case 3:
         ppu->oam_addr = value;
         break;
     case 4:
         ppu->oam[ppu->oam_addr++] = value;
+        ppu_invalidate_mapper4_irq_cache(ppu);
         break;
     case 5:
         if (!ppu->write_latch) {
@@ -407,6 +415,7 @@ void nes_cpu_bus_write(NesEmu *nes, uint16_t address, uint8_t value)
         for (i = 0; i < 256; ++i) {
             nes->ppu.oam[nes->ppu.oam_addr++] = nes_cpu_bus_read(nes, (uint16_t)(source + i));
         }
+        ppu_invalidate_mapper4_irq_cache(&nes->ppu);
         nes->cpu.extra_cycles += 513 + (int)((nes->cpu.cycles + (uint64_t)nes->cpu.io_write_delay) & 1u);
         return;
     }
@@ -691,27 +700,39 @@ static int ppu_sprite_pattern_a12_high(const NesEmu *nes, int scanline)
     return selected < 8;
 }
 
-static int ppu_mapper4_irq_event_cycle(const NesEmu *nes, int scanline)
+static int ppu_mapper4_irq_event_cycle(NesEmu *nes, int scanline)
 {
+    NesPpu *ppu = &nes->ppu;
     int bg_high;
     int sprite_high;
+    int cycle = -1;
 
-    if (nes->rom.mapper_id != 4u || !ppu_rendering_enabled(&nes->ppu) ||
-        !ppu_mapper4_irq_scanline(scanline)) {
+    if (nes->rom.mapper_id != 4u) {
         return -1;
     }
-    bg_high = (nes->ppu.ctrl & 0x10u) != 0;
+    if (ppu->mapper4_irq_cache_valid && ppu->mapper4_irq_cache_scanline == scanline) {
+        return ppu->mapper4_irq_cache_cycle;
+    }
+    if (!ppu_rendering_enabled(ppu) || !ppu_mapper4_irq_scanline(scanline)) {
+        ppu->mapper4_irq_cache_scanline = scanline;
+        ppu->mapper4_irq_cache_cycle = -1;
+        ppu->mapper4_irq_cache_valid = 1;
+        return -1;
+    }
+    bg_high = (ppu->ctrl & 0x10u) != 0;
     sprite_high = ppu_sprite_pattern_a12_high(nes, scanline);
     if (!bg_high && sprite_high) {
-        return PPU_MMC3_SPRITE_FETCH_CYCLE;
+        cycle = PPU_MMC3_SPRITE_FETCH_CYCLE;
+    } else if (bg_high && !sprite_high) {
+        cycle = PPU_MMC3_BG_FETCH_CYCLE;
     }
-    if (bg_high && !sprite_high) {
-        return PPU_MMC3_BG_FETCH_CYCLE;
-    }
-    return -1;
+    ppu->mapper4_irq_cache_scanline = scanline;
+    ppu->mapper4_irq_cache_cycle = cycle;
+    ppu->mapper4_irq_cache_valid = 1;
+    return cycle;
 }
 
-static int ppu_next_event_after(const NesEmu *nes, int position)
+static int ppu_next_event_after(NesEmu *nes, int position)
 {
     const NesPpu *ppu = &nes->ppu;
     int next = PPU_CYCLES_PER_FRAME;

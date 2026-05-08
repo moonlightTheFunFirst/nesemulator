@@ -183,7 +183,7 @@ void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value)
         nes->apu.noise_timer_counter = 0;
         break;
     case 0x4015u:
-        nes->apu.status = value;
+        nes->apu.status = (uint8_t)(value & 0x1Fu);
         nes->apu.dmc_irq = 0;
         nes_update_irq(nes);
         if ((value & 0x01u) == 0) {
@@ -522,7 +522,7 @@ static void apu_clock_pulse_timer(NesApu *apu, int channel, int cycles)
         period = 2;
     }
     apu->pulse_timer_counter[channel] -= cycles;
-    while (apu->pulse_timer_counter[channel] <= 0) {
+    while (apu->pulse_timer_counter[channel] < 0) {
         apu->pulse_timer_counter[channel] += period;
         apu->pulse_sequence_step[channel] = (uint8_t)((apu->pulse_sequence_step[channel] + 1u) & 7u);
     }
@@ -538,7 +538,7 @@ static void apu_clock_triangle_timer(NesApu *apu, int cycles)
         period = 1;
     }
     apu->triangle_timer_counter -= cycles;
-    while (apu->triangle_timer_counter <= 0) {
+    while (apu->triangle_timer_counter < 0) {
         apu->triangle_timer_counter += period;
         if ((apu->status & 0x04u) != 0 &&
             apu->length_counter[2] != 0 &&
@@ -555,7 +555,7 @@ static void apu_clock_noise_timer(NesApu *apu, int cycles)
     int period = noise_periods[r[2] & 0x0F];
 
     apu->noise_timer_counter -= cycles;
-    while (apu->noise_timer_counter <= 0) {
+    while (apu->noise_timer_counter < 0) {
         uint16_t tap = (uint16_t)(((r[2] & 0x80u) != 0) ? 6u : 1u);
         uint16_t feedback = (uint16_t)((apu->noise_lfsr ^ (apu->noise_lfsr >> tap)) & 1u);
 

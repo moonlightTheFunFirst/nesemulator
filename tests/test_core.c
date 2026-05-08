@@ -51,6 +51,8 @@ static int audio_has_signal(const int16_t *samples, size_t count)
 }
 
 void nes_apu_clock_frame_counter(NesEmu *nes, int cycles);
+void nes_apu_clock_audio(NesEmu *nes, int cycles);
+void nes_apu_write(NesEmu *nes, uint16_t address, uint8_t value);
 void nes_mapper19_clock_audio(NesEmu *nes, int cycles);
 int nes_cpu_step(NesEmu *nes);
 
@@ -1134,6 +1136,96 @@ static int test_ppustatus_read_sees_vblank_start_during_instruction(void)
     return ok;
 }
 
+static void prepare_ppustatus_timing_rom(uint8_t *rom, const uint8_t *program, size_t program_size)
+{
+    memset(rom, 0xEA, TEST_ROM_SIZE);
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 1;
+    rom[6] = 0;
+    rom[7] = 0;
+    memcpy(&rom[16], program, program_size);
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+}
+
+static void prepare_ppustatus_sprite0_event(NesEmu *nes, int ppu_cycles_until_read)
+{
+    nes->ppu.scanline = 40;
+    nes->ppu.cycle = 20;
+    nes->ppu.mask = 0x18u;
+    nes->ppu.status = 0;
+    nes->ppu.sprite0_hit_position = 40 * 341 + 20 + ppu_cycles_until_read;
+}
+
+static int test_ppustatus_load_reads_use_instruction_cycle(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    uint8_t ldx_abs[] = {
+        0xAE, 0x02, 0x20, /* LDX $2002 */
+        0x02
+    };
+    uint8_t ldy_abs[] = {
+        0xAC, 0x02, 0x20, /* LDY $2002 */
+        0x02
+    };
+    uint8_t lda_absx[] = {
+        0xBD, 0x02, 0x20, /* LDA $2002,X */
+        0x02
+    };
+    uint8_t lda_indy[] = {
+        0xB1, 0x10,       /* LDA ($10),Y */
+        0x02
+    };
+
+    prepare_ppustatus_timing_rom(rom, ldx_abs, sizeof(ldx_abs));
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load ldx ppustatus timing rom", result, NES_RESULT_OK);
+    prepare_ppustatus_sprite0_event(&nes, 9);
+    ok &= expect_int("ldx ppustatus cycles", nes_cpu_step(&nes), 4);
+    ok &= expect_int("ldx sees sprite0 at read cycle", nes.cpu.x & 0x40, 0x40);
+    nes_shutdown(&nes);
+
+    prepare_ppustatus_timing_rom(rom, ldy_abs, sizeof(ldy_abs));
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load ldy ppustatus timing rom", result, NES_RESULT_OK);
+    prepare_ppustatus_sprite0_event(&nes, 9);
+    ok &= expect_int("ldy ppustatus cycles", nes_cpu_step(&nes), 4);
+    ok &= expect_int("ldy sees sprite0 at read cycle", nes.cpu.y & 0x40, 0x40);
+    nes_shutdown(&nes);
+
+    prepare_ppustatus_timing_rom(rom, lda_absx, sizeof(lda_absx));
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load lda absx ppustatus timing rom", result, NES_RESULT_OK);
+    nes.cpu.x = 0;
+    prepare_ppustatus_sprite0_event(&nes, 9);
+    ok &= expect_int("lda absx ppustatus cycles", nes_cpu_step(&nes), 4);
+    ok &= expect_int("lda absx sees sprite0 at read cycle", nes.cpu.a & 0x40, 0x40);
+    nes_shutdown(&nes);
+
+    prepare_ppustatus_timing_rom(rom, lda_indy, sizeof(lda_indy));
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load lda indy ppustatus timing rom", result, NES_RESULT_OK);
+    nes.ram[0x10] = 0x02;
+    nes.ram[0x11] = 0x20;
+    nes.cpu.y = 0;
+    prepare_ppustatus_sprite0_event(&nes, 12);
+    ok &= expect_int("lda indy ppustatus cycles", nes_cpu_step(&nes), 5);
+    ok &= expect_int("lda indy sees sprite0 at read cycle", nes.cpu.a & 0x40, 0x40);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_inc_dec_flags_use_written_value(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1333,6 +1425,39 @@ static int test_pulse_sweep_updates_timer(void)
     nes_cpu_write(&nes, 0x4017, 0x80);
     ok &= expect_int("pulse channel 1 negative sweep low", nes.apu.regs[2], 0x7F);
     ok &= expect_int("pulse channel 1 negative sweep high", nes.apu.regs[3] & 0x07, 0x00);
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_apu_timer_boundary_and_status_mask(void)
+{
+    NesEmu nes;
+    int ok = 1;
+
+    nes_init(&nes);
+    nes.apu.regs[0x02] = 0;
+    nes.apu.regs[0x03] = 0;
+    nes.apu.regs[0x0E] = 0;
+    nes_apu_clock_audio(&nes, 4);
+    ok &= expect_int("pulse timer exact boundary steps", nes.apu.pulse_sequence_step[0], 2);
+    ok &= expect_int("noise timer exact boundary steps", nes.apu.noise_lfsr, 0x4000);
+    nes_shutdown(&nes);
+
+    nes_init(&nes);
+    nes.apu.regs[0x0A] = 2;
+    nes.apu.regs[0x0B] = 0;
+    nes.apu.status = 0x04u;
+    nes.apu.length_counter[2] = 1;
+    nes.apu.triangle_linear_counter = 1;
+    nes_apu_clock_audio(&nes, 6);
+    ok &= expect_int("triangle timer exact boundary steps", nes.apu.triangle_sequence_step, 2);
+    nes_shutdown(&nes);
+
+    nes_init(&nes);
+    nes_apu_write(&nes, 0x4015u, 0xE0u);
+    ok &= expect_int("apu status masks write-only bits", nes.apu.status, 0);
+    nes_apu_write(&nes, 0x4015u, 0xFFu);
+    ok &= expect_int("apu status keeps channel enable bits", nes.apu.status, 0x1F);
     nes_shutdown(&nes);
     return ok;
 }
@@ -1861,11 +1986,13 @@ int main(int argc, char **argv)
     ok &= test_sprite_behind_background_blocks_later_sprites();
     ok &= test_ppustatus_read_uses_instruction_cycle();
     ok &= test_ppustatus_read_sees_vblank_start_during_instruction();
+    ok &= test_ppustatus_load_reads_use_instruction_cycle();
     ok &= test_inc_dec_flags_use_written_value();
     ok &= test_unofficial_opcodes();
     ok &= test_apu_length_counter();
     ok &= test_apu_envelope_and_linear_counters();
     ok &= test_pulse_sweep_updates_timer();
+    ok &= test_apu_timer_boundary_and_status_mask();
     ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_apu_frame_counter_event_timing();
     ok &= test_dmc_playback_progresses();
