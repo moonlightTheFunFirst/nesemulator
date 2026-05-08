@@ -68,6 +68,10 @@ typedef struct NesMapper {
     uint8_t mapper4_irq_reload;
     uint8_t mapper4_irq_enabled;
     uint8_t mapper4_irq_pending;
+    uint8_t mapper10_prg_bank;
+    uint8_t mapper10_chr_banks[4];
+    uint8_t mapper10_latch0;
+    uint8_t mapper10_latch1;
     uint8_t mapper19_chr_regs[12];
     uint8_t mapper19_prg_regs[3];
     uint8_t mapper19_e800;
@@ -208,7 +212,7 @@ void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sa
 
 uint8_t nes_cpu_read(NesEmu *nes, uint16_t address);
 void nes_cpu_write(NesEmu *nes, uint16_t address, uint8_t value);
-uint8_t nes_ppu_read(const NesEmu *nes, uint16_t address);
+uint8_t nes_ppu_read(NesEmu *nes, uint16_t address);
 void nes_ppu_write(NesEmu *nes, uint16_t address, uint8_t value);
 
 #ifdef __cplusplus

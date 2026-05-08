@@ -10,6 +10,10 @@
 #define TEST_MAPPER4_CHR_BANKS 2u
 #define TEST_MAPPER4_ROM_SIZE \
     (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER4_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER4_CHR_BANKS)
+#define TEST_MAPPER10_PRG_BANKS 4u
+#define TEST_MAPPER10_CHR_BANKS 4u
+#define TEST_MAPPER10_ROM_SIZE \
+    (16u + NESEMU_PRG_BANK_SIZE * TEST_MAPPER10_PRG_BANKS + NESEMU_CHR_BANK_SIZE * TEST_MAPPER10_CHR_BANKS)
 #define TEST_MAPPER19_PRG_BANKS 4u
 #define TEST_MAPPER19_CHR_BANKS 2u
 #define TEST_MAPPER19_ROM_SIZE \
@@ -228,6 +232,82 @@ static int test_mapper4_bank_switch_and_irq(void)
     nes_run_frame(&nes);
     ok &= expect_int("mapper4 scanline irq reached handler", nes_cpu_read(&nes, 0x0020), 1);
     ok &= expect_int("mapper4 irq acknowledged", nes.mapper.mapper4_irq_pending, 0);
+
+    nes_shutdown(&nes);
+    return ok;
+}
+
+static int test_mapper10_mmc4_latches(void)
+{
+    uint8_t rom[TEST_MAPPER10_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_size = NESEMU_PRG_BANK_SIZE * TEST_MAPPER10_PRG_BANKS;
+    size_t chr_offset = 16u + prg_size;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+    size_t bank;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER10_PRG_BANKS;
+    rom[5] = TEST_MAPPER10_CHR_BANKS;
+    rom[6] = 0xA0;
+    rom[7] = 0x00;
+    for (bank = 0; bank < TEST_MAPPER10_PRG_BANKS; ++bank) {
+        rom[prg_offset + bank * NESEMU_PRG_BANK_SIZE] = (uint8_t)(0x80u + bank);
+    }
+    for (bank = 0; bank < TEST_MAPPER10_CHR_BANKS * 2u; ++bank) {
+        rom[chr_offset + bank * 0x1000u] = (uint8_t)(0x10u + bank);
+        rom[chr_offset + bank * 0x1000u + 0x0FD8u] = (uint8_t)(0x20u + bank);
+        rom[chr_offset + bank * 0x1000u + 0x0FE8u] = (uint8_t)(0x30u + bank);
+    }
+    rom[prg_offset + (TEST_MAPPER10_PRG_BANKS - 1u) * NESEMU_PRG_BANK_SIZE + 0x3FFCu] = 0x00;
+    rom[prg_offset + (TEST_MAPPER10_PRG_BANKS - 1u) * NESEMU_PRG_BANK_SIZE + 0x3FFDu] = 0xC0;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load mapper10", result, NES_RESULT_OK);
+    ok &= expect_int("mapper10 id", nes.rom.mapper_id, 10);
+    ok &= expect_int("mapper10 initial 8000", nes_cpu_read(&nes, 0x8000), 0x80);
+    ok &= expect_int("mapper10 fixed C000", nes_cpu_read(&nes, 0xC000), 0x83);
+    nes_cpu_write(&nes, 0xA000, 0x02);
+    ok &= expect_int("mapper10 prg switch 8000", nes_cpu_read(&nes, 0x8000), 0x82);
+
+    nes_cpu_write(&nes, 0xB000, 0x01);
+    nes_cpu_write(&nes, 0xC000, 0x02);
+    nes_cpu_write(&nes, 0xD000, 0x03);
+    nes_cpu_write(&nes, 0xE000, 0x04);
+    ok &= expect_int("mapper10 latch0 starts FE", nes.mapper.mapper10_latch0, 0xFE);
+    ok &= expect_int("mapper10 latch1 starts FE", nes.mapper.mapper10_latch1, 0xFE);
+    ok &= expect_int("mapper10 latch0 FE bank", nes_ppu_read(&nes, 0x0000), 0x12);
+    ok &= expect_int("mapper10 latch1 FE bank", nes_ppu_read(&nes, 0x1000), 0x14);
+
+    ok &= expect_int("mapper10 FD trigger uses old bank", nes_ppu_read(&nes, 0x0FD8), 0x22);
+    ok &= expect_int("mapper10 latch0 set FD", nes.mapper.mapper10_latch0, 0xFD);
+    ok &= expect_int("mapper10 latch0 FD bank", nes_ppu_read(&nes, 0x0000), 0x11);
+    ok &= expect_int("mapper10 FE trigger uses old bank", nes_ppu_read(&nes, 0x0FE8), 0x31);
+    ok &= expect_int("mapper10 latch0 set FE", nes.mapper.mapper10_latch0, 0xFE);
+    ok &= expect_int("mapper10 latch0 back to FE bank", nes_ppu_read(&nes, 0x0000), 0x12);
+
+    ok &= expect_int("mapper10 high FD trigger uses old bank", nes_ppu_read(&nes, 0x1FD8), 0x24);
+    ok &= expect_int("mapper10 latch1 set FD", nes.mapper.mapper10_latch1, 0xFD);
+    ok &= expect_int("mapper10 latch1 FD bank", nes_ppu_read(&nes, 0x1000), 0x13);
+    ok &= expect_int("mapper10 high FE trigger uses old bank", nes_ppu_read(&nes, 0x1FE8), 0x33);
+    ok &= expect_int("mapper10 latch1 set FE", nes.mapper.mapper10_latch1, 0xFE);
+    ok &= expect_int("mapper10 latch1 back to FE bank", nes_ppu_read(&nes, 0x1000), 0x14);
+
+    nes.ppu.nametable[0] = 0xAAu;
+    nes.ppu.nametable[0x400] = 0xBBu;
+    nes_cpu_write(&nes, 0xF000, 0x00);
+    ok &= expect_int("mapper10 mirroring vertical A", nes_ppu_read(&nes, 0x2800), 0xAA);
+    ok &= expect_int("mapper10 mirroring vertical B", nes_ppu_read(&nes, 0x2400), 0xBB);
+    nes_cpu_write(&nes, 0xF000, 0x01);
+    ok &= expect_int("mapper10 mirroring horizontal A", nes_ppu_read(&nes, 0x2400), 0xAA);
+    ok &= expect_int("mapper10 mirroring horizontal B", nes_ppu_read(&nes, 0x2800), 0xBB);
 
     nes_shutdown(&nes);
     return ok;
@@ -1676,6 +1756,7 @@ int main(int argc, char **argv)
     ok &= test_mapper0_load_and_map();
     ok &= test_mapper3_chr_bank_switch();
     ok &= test_mapper4_bank_switch_and_irq();
+    ok &= test_mapper10_mmc4_latches();
     ok &= test_mapper19_bank_switch_nt_and_irq();
     ok &= test_cpu_executes_program();
     ok &= test_ora_opcodes();
