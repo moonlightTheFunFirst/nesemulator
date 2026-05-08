@@ -16,6 +16,7 @@ add_library(nesemu_core
     src/core/mapper/mapper4.c
     src/core/mapper/mapper10.c
     src/core/mapper/mapper19.c
+    src/core/mapper/mapper206.c
     src/core/mapper/mapper88.c
 )
 target_include_directories(nesemu_core PUBLIC include)

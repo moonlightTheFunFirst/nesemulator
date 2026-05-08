@@ -90,6 +90,8 @@ struct NesMapper {
     uint8_t mapper10_chr_banks[4];
     uint8_t mapper10_latch0;
     uint8_t mapper10_latch1;
+    uint8_t mapper206_bank_select;
+    uint8_t mapper206_regs[8];
     uint8_t mapper88_bank_select;
     uint8_t mapper88_regs[8];
     uint8_t mapper19_chr_regs[12];
