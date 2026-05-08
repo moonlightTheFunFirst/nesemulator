@@ -5,7 +5,8 @@
 #include <string.h>
 
 enum {
-    CPU_CLOCK_NTSC = 1789773
+    CPU_CLOCK_NTSC = 1789773,
+    APU_MIX_SCALE = 1 << 24
 };
 
 /* The multiplexed N163 output relies on downstream analog rolloff, especially in 8ch games. */
@@ -74,6 +75,42 @@ static const uint8_t apu_length_table[32] = {
     160, 8, 60, 10, 14, 12, 26, 14,
     12, 16, 24, 18, 48, 20, 96, 22,
     192, 24, 72, 26, 16, 28, 32, 30
+};
+
+static const int32_t apu_pulse_table[31] = {
+    0, 195503, 386311, 572591, 754503, 932197, 1105820, 1275509,
+    1441397, 1603610, 1762269, 1917490, 2069382, 2218052, 2363601, 2506127,
+    2645723, 2782478, 2916478, 3047805, 3176539, 3302756, 3426529, 3547927,
+    3667020, 3783872, 3898545, 4011100, 4121595, 4230086, 4336627
+};
+
+static const int32_t apu_tnd_table[203] = {
+    0, 109740, 218585, 326546, 433634, 539859, 645232, 749763,
+    853462, 956339, 1058404, 1159666, 1260135, 1359819, 1458729, 1556873,
+    1654260, 1750898, 1846797, 1941965, 2036410, 2130140, 2223163, 2315488,
+    2407122, 2498072, 2588348, 2677955, 2766902, 2855195, 2942842, 3029851,
+    3116227, 3201977, 3287110, 3371630, 3455545, 3538862, 3621586, 3703724,
+    3785282, 3866266, 3946683, 4026538, 4105837, 4184585, 4262790, 4340455,
+    4417587, 4494192, 4570274, 4645839, 4720892, 4795439, 4869484, 4943033,
+    5016090, 5088661, 5160749, 5232361, 5303501, 5374173, 5444382, 5514133,
+    5583430, 5652277, 5720679, 5788640, 5856164, 5923256, 5989920, 6056159,
+    6121978, 6187381, 6252372, 6316955, 6381133, 6444910, 6508290, 6571277,
+    6633874, 6696085, 6757914, 6819363, 6880437, 6941139, 7001473, 7061441,
+    7121047, 7180294, 7239186, 7297725, 7355915, 7413759, 7471261, 7528422,
+    7585246, 7641736, 7697895, 7753726, 7809232, 7864416, 7919279, 7973826,
+    8028059, 8081980, 8135593, 8188899, 8241902, 8294604, 8347008, 8399116,
+    8450931, 8502454, 8553690, 8604639, 8655305, 8705689, 8755794, 8805623,
+    8855178, 8904461, 8953473, 9002218, 9050698, 9098914, 9146870, 9194566,
+    9242005, 9289190, 9336121, 9382802, 9429234, 9475420, 9521360, 9567058,
+    9612515, 9657732, 9702713, 9747458, 9791969, 9836249, 9880299, 9924121,
+    9967717, 10011088, 10054237, 10097164, 10139872, 10182362, 10224636, 10266695,
+    10308542, 10350178, 10391604, 10432822, 10473833, 10514640, 10555243, 10595645,
+    10635846, 10675848, 10715652, 10755261, 10794676, 10833897, 10872926, 10911766,
+    10950416, 10988879, 11027156, 11065248, 11103157, 11140883, 11178429, 11215795,
+    11252983, 11289994, 11326829, 11363490, 11399977, 11436293, 11472438, 11508413,
+    11544220, 11579859, 11615333, 11650642, 11685787, 11720769, 11755590, 11790250,
+    11824752, 11859095, 11893281, 11927311, 11961186, 11994907, 12028476, 12061892,
+    12095158, 12128274, 12161242
 };
 
 static const uint8_t apu_envelope_reg_index[3] = { 0, 4, 12 };
@@ -388,7 +425,7 @@ void nes_apu_clock_frame_counter(NesEmu *nes, int cycles)
     }
 }
 
-static double pulse_sample(const NesApu *apu, int channel)
+static int pulse_sample(const NesApu *apu, int channel)
 {
     const uint8_t *r = &apu->regs[channel ? 4 : 0];
     int enabled = (apu->status & (channel ? 0x02u : 0x01u)) != 0;
@@ -396,9 +433,9 @@ static double pulse_sample(const NesApu *apu, int channel)
     int duty = (r[0] >> 6) & 3;
 
     if (!enabled || apu->length_counter[channel] == 0 || pulse_sweep_mutes(apu, channel) || volume == 0) {
-        return 0.0;
+        return 0;
     }
-    return pulse_duty_sequences[duty][apu->pulse_sequence_step[channel] & 7u] ? (double)volume : 0.0;
+    return pulse_duty_sequences[duty][apu->pulse_sequence_step[channel] & 7u] ? volume : 0;
 }
 
 static int pulse_timer(const NesApu *apu, int channel)
@@ -540,27 +577,27 @@ static void apu_clock_channel_timers(NesEmu *nes, int cycles)
     apu_clock_noise_timer(apu, cycles);
 }
 
-static double triangle_sample(const NesApu *apu)
+static int triangle_sample(const NesApu *apu)
 {
     const uint8_t *r = &apu->regs[8];
     int enabled = (apu->status & 0x04u) != 0;
     int timer = r[2] | ((r[3] & 0x07) << 8);
 
     if (!enabled || apu->length_counter[2] == 0 || apu->triangle_linear_counter == 0 || timer < 2) {
-        return 0.0;
+        return 0;
     }
-    return (double)triangle_sequence[apu->triangle_sequence_step & 31u];
+    return triangle_sequence[apu->triangle_sequence_step & 31u];
 }
 
-static double noise_sample(const NesApu *apu)
+static int noise_sample(const NesApu *apu)
 {
     int enabled = (apu->status & 0x08u) != 0;
     int volume = apu_envelope_volume(apu, 2);
 
     if (!enabled || apu->length_counter[3] == 0 || volume == 0) {
-        return 0.0;
+        return 0;
     }
-    return (apu->noise_lfsr & 1u) ? 0.0 : (double)volume;
+    return (apu->noise_lfsr & 1u) ? 0 : volume;
 }
 
 static void dmc_fetch_byte(NesEmu *nes)
@@ -649,24 +686,19 @@ static double namco163_filtered_sample(NesApu *apu, double sample)
 
 static int16_t apu_mix_sample(NesEmu *nes)
 {
-    double pulse1 = pulse_sample(&nes->apu, 0);
-    double pulse2 = pulse_sample(&nes->apu, 1);
-    double triangle = triangle_sample(&nes->apu);
-    double noise = noise_sample(&nes->apu);
-    double dmc = (double)nes->apu.dmc_output;
+    int pulse1 = pulse_sample(&nes->apu, 0);
+    int pulse2 = pulse_sample(&nes->apu, 1);
+    int triangle = triangle_sample(&nes->apu);
+    int noise = noise_sample(&nes->apu);
+    int dmc = nes->apu.dmc_output;
+    int pulse_index = pulse1 + pulse2;
+    int tnd_index = triangle * 3 + noise * 2 + dmc;
+    int32_t internal_mix = apu_pulse_table[pulse_index] + apu_tnd_table[tnd_index];
     double namco163 = namco163_filtered_sample(&nes->apu, nes_mapper19_audio_sample(nes));
-    double pulse_sum = pulse1 + pulse2;
-    double tnd_sum = triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0;
-    double mix = 0.0;
+    double mix = (double)internal_mix / (double)APU_MIX_SCALE;
     double filtered;
     int value;
 
-    if (pulse_sum > 0.0) {
-        mix += 95.88 / (8128.0 / pulse_sum + 100.0);
-    }
-    if (tnd_sum > 0.0) {
-        mix += 159.79 / (1.0 / tnd_sum + 100.0);
-    }
     mix += namco163 / NAMCO163_MIX_SCALE;
     filtered = mix - nes->apu.highpass_prev_input + 0.995 * nes->apu.highpass_prev_output;
     nes->apu.highpass_prev_input = mix;
@@ -701,10 +733,10 @@ void nes_apu_clock_audio(NesEmu *nes, int cycles)
     apu_clock_channel_timers(nes, cycles);
     apu_clock_dmc(nes, cycles);
     nes_mapper19_clock_audio(nes, cycles);
-    apu->sample_accumulator += (double)cycles * (double)NESEMU_AUDIO_RATE;
-    while (apu->sample_accumulator >= (double)CPU_CLOCK_NTSC) {
+    apu->sample_accumulator += (uint64_t)cycles * (uint64_t)NESEMU_AUDIO_RATE;
+    while (apu->sample_accumulator >= (uint64_t)CPU_CLOCK_NTSC) {
         apu_queue_sample(apu, apu_mix_sample(nes));
-        apu->sample_accumulator -= (double)CPU_CLOCK_NTSC;
+        apu->sample_accumulator -= (uint64_t)CPU_CLOCK_NTSC;
     }
 }
 

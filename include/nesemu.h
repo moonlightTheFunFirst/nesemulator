@@ -184,7 +184,7 @@ typedef struct NesApu {
     uint8_t frame_counter_mode;
     uint8_t frame_irq_inhibit;
     uint8_t frame_irq;
-    double sample_accumulator;
+    uint64_t sample_accumulator;
     double namco163_lowpass_output;
     double namco163_lowpass_output2;
     double highpass_prev_input;
