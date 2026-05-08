@@ -8,6 +8,10 @@ enum {
     CPU_CLOCK_NTSC = 1789773
 };
 
+/* The multiplexed N163 output relies on downstream analog rolloff, especially in 8ch games. */
+#define NAMCO163_LOWPASS_ALPHA 0.68
+#define NAMCO163_MIX_SCALE 200.0
+
 static void apu_clock_length_counters(NesApu *apu);
 static void apu_clock_half_frame(NesApu *apu);
 static void apu_clock_quarter_frame(NesApu *apu);
@@ -15,6 +19,7 @@ static void apu_clock_sweeps(NesApu *apu);
 static void apu_clock_dmc(NesEmu *nes, int cycles);
 static void apu_clock_channel_timers(NesEmu *nes, int cycles);
 static int pulse_sweep_mutes(const NesApu *apu, int channel);
+static double namco163_filtered_sample(NesApu *apu, double sample);
 
 void nes_apu_init(NesApu *apu)
 {
@@ -633,6 +638,15 @@ static void apu_clock_dmc(NesEmu *nes, int cycles)
     }
 }
 
+static double namco163_filtered_sample(NesApu *apu, double sample)
+{
+    apu->namco163_lowpass_output +=
+        NAMCO163_LOWPASS_ALPHA * (sample - apu->namco163_lowpass_output);
+    apu->namco163_lowpass_output2 +=
+        NAMCO163_LOWPASS_ALPHA * (apu->namco163_lowpass_output - apu->namco163_lowpass_output2);
+    return apu->namco163_lowpass_output2;
+}
+
 static int16_t apu_mix_sample(NesEmu *nes)
 {
     double pulse1 = pulse_sample(&nes->apu, 0);
@@ -640,7 +654,7 @@ static int16_t apu_mix_sample(NesEmu *nes)
     double triangle = triangle_sample(&nes->apu);
     double noise = noise_sample(&nes->apu);
     double dmc = (double)nes->apu.dmc_output;
-    double namco163 = nes_mapper19_audio_sample(nes);
+    double namco163 = namco163_filtered_sample(&nes->apu, nes_mapper19_audio_sample(nes));
     double pulse_sum = pulse1 + pulse2;
     double tnd_sum = triangle / 8227.0 + noise / 12241.0 + dmc / 22638.0;
     double mix = 0.0;
@@ -653,7 +667,7 @@ static int16_t apu_mix_sample(NesEmu *nes)
     if (tnd_sum > 0.0) {
         mix += 159.79 / (1.0 / tnd_sum + 100.0);
     }
-    mix += namco163 / 360.0;
+    mix += namco163 / NAMCO163_MIX_SCALE;
     filtered = mix - nes->apu.highpass_prev_input + 0.995 * nes->apu.highpass_prev_output;
     nes->apu.highpass_prev_input = mix;
     nes->apu.highpass_prev_output = filtered;

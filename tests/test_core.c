@@ -47,6 +47,7 @@ static int audio_has_signal(const int16_t *samples, size_t count)
 }
 
 void nes_apu_clock_frame_counter(NesEmu *nes, int cycles);
+void nes_mapper19_clock_audio(NesEmu *nes, int cycles);
 int nes_cpu_step(NesEmu *nes);
 
 static int test_mapper0_load_and_map(void)
@@ -1484,6 +1485,61 @@ static int test_mapper19_n163_audio(void)
     return ok;
 }
 
+static int test_mapper19_n163_channel_count_encoding(void)
+{
+    uint8_t rom[TEST_MAPPER19_ROM_SIZE];
+    size_t prg_offset = 16u;
+    size_t prg_8k_banks = TEST_MAPPER19_PRG_BANKS * 2u;
+    size_t fixed_offset = prg_offset + (prg_8k_banks - 1u) * 0x2000u;
+    uint8_t waveform[] = { 0xFF, 0xFF };
+    uint8_t first_channel[] = {
+        0x01, 0x00, 0x00, 0x00, 0xFC, 0x00, 0x00, 0x0F
+    };
+    uint8_t second_channel[] = {
+        0x01, 0x00, 0x00, 0x00, 0xFC, 0x00, 0x00, 0x0F
+    };
+    uint8_t two_channel_count = 0x1F;
+    NesEmu nes;
+    NesResult result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = TEST_MAPPER19_PRG_BANKS;
+    rom[5] = TEST_MAPPER19_CHR_BANKS;
+    rom[6] = 0x31;
+    rom[7] = 0x10;
+    rom[fixed_offset] = 0x4C;
+    rom[fixed_offset + 1] = 0x00;
+    rom[fixed_offset + 2] = 0xE0;
+    rom[fixed_offset + 0x1FFCu] = 0x00;
+    rom[fixed_offset + 0x1FFDu] = 0xE0;
+
+    nes_init(&nes);
+    result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load n163 channel count rom", result, NES_RESULT_OK);
+    mapper19_write_chip_ram(&nes, 0x00u, waveform, sizeof(waveform));
+    mapper19_write_chip_ram(&nes, 0x70u, second_channel, sizeof(second_channel));
+    mapper19_write_chip_ram(&nes, 0x78u, first_channel, sizeof(first_channel));
+    nes_mapper19_clock_audio(&nes, 30);
+    ok &= expect_int("n163 C0 keeps channel 7 muted",
+                     nes.mapper.mapper19_audio_output[1],
+                     0);
+    ok &= expect_int("n163 C0 clocks channel 8",
+                     nes.mapper.mapper19_audio_output[0] != 0,
+                     1);
+    mapper19_write_chip_ram(&nes, 0x7Fu, &two_channel_count, 1);
+    nes_mapper19_clock_audio(&nes, 30);
+    ok &= expect_int("n163 C1 clocks channel 7",
+                     nes.mapper.mapper19_audio_output[1] != 0,
+                     1);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_kil_opcode_stops_cpu(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -1646,6 +1702,7 @@ int main(int argc, char **argv)
     ok &= test_dmc_irq_status_and_acknowledge();
     ok &= test_apu_timer_sequences_drive_channels();
     ok &= test_mapper19_n163_audio();
+    ok &= test_mapper19_n163_channel_count_encoding();
     ok &= test_kil_opcode_stops_cpu();
     ok &= test_unsupported_mapper();
     for (i = 1; i < argc; ++i) {
