@@ -601,6 +601,13 @@ static void apu_clock_channel_timers(NesEmu *nes, int cycles)
     apu_clock_noise_timer(apu, cycles);
 }
 
+static void apu_clock_generators(NesEmu *nes, int cycles)
+{
+    apu_clock_channel_timers(nes, cycles);
+    apu_clock_dmc(nes, cycles);
+    nes_mapper19_clock_audio(nes, cycles);
+}
+
 static int triangle_sample(const NesApu *apu)
 {
     const uint8_t *r = &apu->regs[8];
@@ -754,13 +761,24 @@ void nes_apu_clock_audio(NesEmu *nes, int cycles)
     if (cycles <= 0) {
         return;
     }
-    apu_clock_channel_timers(nes, cycles);
-    apu_clock_dmc(nes, cycles);
-    nes_mapper19_clock_audio(nes, cycles);
-    apu->sample_accumulator += (uint64_t)cycles * (uint64_t)NESEMU_AUDIO_RATE;
-    while (apu->sample_accumulator >= (uint64_t)CPU_CLOCK_NTSC) {
-        apu_queue_sample(apu, apu_mix_sample(nes));
-        apu->sample_accumulator -= (uint64_t)CPU_CLOCK_NTSC;
+    while (cycles > 0) {
+        uint64_t remaining = (uint64_t)CPU_CLOCK_NTSC - apu->sample_accumulator;
+        int step = (int)((remaining + (uint64_t)NESEMU_AUDIO_RATE - 1u) /
+                         (uint64_t)NESEMU_AUDIO_RATE);
+
+        if (step <= 0) {
+            step = 1;
+        }
+        if (step > cycles) {
+            step = cycles;
+        }
+        apu_clock_generators(nes, step);
+        apu->sample_accumulator += (uint64_t)step * (uint64_t)NESEMU_AUDIO_RATE;
+        cycles -= step;
+        if (apu->sample_accumulator >= (uint64_t)CPU_CLOCK_NTSC) {
+            apu_queue_sample(apu, apu_mix_sample(nes));
+            apu->sample_accumulator -= (uint64_t)CPU_CLOCK_NTSC;
+        }
     }
 }
 

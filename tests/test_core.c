@@ -1911,6 +1911,54 @@ static int test_apu_timer_boundary_and_status_mask(void)
     return ok;
 }
 
+static void setup_apu_split_clock_probe(NesEmu *nes)
+{
+    nes_init(nes);
+    nes->apu.status = 0x0Du;
+    nes->apu.length_counter[0] = 1;
+    nes->apu.length_counter[2] = 1;
+    nes->apu.length_counter[3] = 1;
+    nes->apu.triangle_linear_counter = 1;
+    nes->apu.regs[0x00] = 0x3Fu;
+    nes->apu.regs[0x02] = 0x08u;
+    nes->apu.regs[0x08] = 0x7Fu;
+    nes->apu.regs[0x0A] = 0x03u;
+    nes->apu.regs[0x0C] = 0x1Fu;
+    nes->apu.regs[0x0E] = 0x00u;
+}
+
+static int test_apu_bulk_clock_matches_split_clock(void)
+{
+    NesEmu bulk;
+    NesEmu split;
+    int ok = 1;
+    size_t i;
+
+    setup_apu_split_clock_probe(&bulk);
+    setup_apu_split_clock_probe(&split);
+    nes_apu_clock_audio(&bulk, 513);
+    for (i = 0; i < 513; ++i) {
+        nes_apu_clock_audio(&split, 1);
+    }
+    ok &= expect_int("apu split sample count", (int)bulk.apu.sample_count, (int)split.apu.sample_count);
+    ok &= expect_int("apu split pulse step",
+                     bulk.apu.pulse_sequence_step[0],
+                     split.apu.pulse_sequence_step[0]);
+    ok &= expect_int("apu split triangle step",
+                     bulk.apu.triangle_sequence_step,
+                     split.apu.triangle_sequence_step);
+    ok &= expect_int("apu split noise lfsr", bulk.apu.noise_lfsr, split.apu.noise_lfsr);
+    for (i = 0; i < bulk.apu.sample_count && i < split.apu.sample_count; ++i) {
+        if (bulk.apu.sample_buffer[i] != split.apu.sample_buffer[i]) {
+            ok &= expect_int("apu split sample", bulk.apu.sample_buffer[i], split.apu.sample_buffer[i]);
+            break;
+        }
+    }
+    nes_shutdown(&bulk);
+    nes_shutdown(&split);
+    return ok;
+}
+
 static int test_apu_frame_irq_drives_irq_vector(void)
 {
     uint8_t rom[TEST_ROM_SIZE];
@@ -2458,6 +2506,7 @@ int main(int argc, char **argv)
     ok &= test_apu_envelope_and_linear_counters();
     ok &= test_pulse_sweep_updates_timer();
     ok &= test_apu_timer_boundary_and_status_mask();
+    ok &= test_apu_bulk_clock_matches_split_clock();
     ok &= test_apu_frame_irq_drives_irq_vector();
     ok &= test_apu_frame_counter_event_timing();
     ok &= test_dmc_playback_progresses();
