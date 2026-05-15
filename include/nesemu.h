@@ -50,7 +50,19 @@ typedef struct NesRomInfo {
     uint8_t has_trainer;
     uint8_t has_battery_ram;
     NesMirroring mirroring;
+    uint8_t ines_header[16];
+    uint32_t rom_crc32;
 } NesRomInfo;
+
+typedef enum NesStateResult {
+    NES_STATE_OK = 0,
+    NES_STATE_INVALID_ARGUMENT,
+    NES_STATE_NO_ROM,
+    NES_STATE_INVALID_DATA,
+    NES_STATE_UNSUPPORTED_VERSION,
+    NES_STATE_ROM_MISMATCH,
+    NES_STATE_BUFFER_TOO_SMALL
+} NesStateResult;
 
 typedef struct NesEmu NesEmu;
 typedef struct NesMapper NesMapper;
@@ -242,6 +254,11 @@ int nes_get_button(const NesEmu *nes, NesButton button);
 void nes_run_frame(NesEmu *nes);
 const uint32_t *nes_get_framebuffer(const NesEmu *nes);
 void nes_render_audio(NesEmu *nes, int16_t *samples, size_t sample_count, int sample_rate);
+
+NesStateResult nes_state_save_size(const NesEmu *nes, size_t *out_size);
+NesStateResult nes_state_save(const NesEmu *nes, uint8_t *data, size_t size, size_t *out_written);
+NesStateResult nes_state_load(NesEmu *nes, const uint8_t *data, size_t size);
+const char *nes_state_result_string(NesStateResult result);
 
 uint8_t nes_cpu_read(NesEmu *nes, uint16_t address);
 void nes_cpu_write(NesEmu *nes, uint16_t address, uint8_t value);

@@ -10,6 +10,7 @@ add_library(nesemu_core
     src/core/nes.c
     src/core/cpu.c
     src/core/apu.c
+    src/core/state.c
     src/core/mapper/mapper.c
     src/core/mapper/mapper0.c
     src/core/mapper/mapper3.c
@@ -28,6 +29,7 @@ add_executable(nesemu WIN32
     src/platform/win32/main.c
 )
 target_link_libraries(nesemu PRIVATE nesemu_core user32 shell32 gdi32 winmm)
+target_link_libraries(nesemu PRIVATE comdlg32)
 target_compile_definitions(nesemu PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 if(MINGW)
     target_link_options(nesemu PRIVATE -municode)

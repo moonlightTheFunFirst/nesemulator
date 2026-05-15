@@ -172,6 +172,109 @@ static int test_mapper3_chr_bank_switch(void)
     return ok;
 }
 
+static int test_state_save_load_roundtrip_and_rom_mismatch(void)
+{
+    uint8_t rom[TEST_ROM_SIZE];
+    uint8_t other_rom[TEST_ROM_SIZE];
+    uint8_t small_buffer[1];
+    uint8_t *state_data = NULL;
+    size_t state_size = 0;
+    size_t written = 0;
+    NesEmu nes;
+    NesEmu other;
+    NesResult load_result;
+    NesStateResult state_result;
+    int ok = 1;
+
+    memset(rom, 0, sizeof(rom));
+    rom[0] = 'N';
+    rom[1] = 'E';
+    rom[2] = 'S';
+    rom[3] = 0x1A;
+    rom[4] = 1;
+    rom[5] = 0;
+    rom[6] = 0;
+    rom[7] = 0;
+    rom[16] = 0xA5;
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80;
+
+    memcpy(other_rom, rom, sizeof(other_rom));
+    other_rom[16] = 0x5A;
+
+    nes_init(&nes);
+    load_result = nes_load_rom_image(&nes, rom, sizeof(rom));
+    ok &= expect_int("load state rom", load_result, NES_RESULT_OK);
+
+    nes.cpu.a = 0x12;
+    nes.cpu.x = 0x34;
+    nes.cpu.pc = 0x8123;
+    nes.ram[0x20] = 0x56;
+    nes_cpu_write(&nes, 0x6000, 0x78);
+    nes_ppu_write(&nes, 0x0004, 0x9A);
+    nes.ppu.ctrl = 0x80;
+    nes.ppu.v = 0x2345;
+    nes.apu.status = 0x1F;
+    nes.apu.frame_irq = 1;
+    nes.joypad.state = 0xA5;
+    nes.joypad.shift = 0x5A;
+    nes.joypad.strobe = 1;
+
+    state_result = nes_state_save_size(&nes, &state_size);
+    ok &= expect_int("state save size result", state_result, NES_STATE_OK);
+    state_result = nes_state_save(&nes, small_buffer, sizeof(small_buffer), &written);
+    ok &= expect_int("state save too small", state_result, NES_STATE_BUFFER_TOO_SMALL);
+    state_data = (uint8_t *)malloc(state_size);
+    if (state_data == NULL) {
+        printf("FAIL state malloc\n");
+        nes_shutdown(&nes);
+        return 0;
+    }
+    state_result = nes_state_save(&nes, state_data, state_size, &written);
+    ok &= expect_int("state save result", state_result, NES_STATE_OK);
+    ok &= expect_int("state written size", (int)written, (int)state_size);
+
+    nes.cpu.a = 0;
+    nes.cpu.x = 0;
+    nes.cpu.pc = 0;
+    nes.ram[0x20] = 0;
+    nes_cpu_write(&nes, 0x6000, 0);
+    nes_ppu_write(&nes, 0x0004, 0);
+    nes.ppu.ctrl = 0;
+    nes.ppu.v = 0;
+    nes.apu.status = 0;
+    nes.apu.frame_irq = 0;
+    nes.joypad.state = 0;
+    nes.joypad.shift = 0;
+    nes.joypad.strobe = 0;
+
+    state_result = nes_state_load(&nes, state_data, written);
+    ok &= expect_int("state load result", state_result, NES_STATE_OK);
+    ok &= expect_int("state cpu a", nes.cpu.a, 0x12);
+    ok &= expect_int("state cpu x", nes.cpu.x, 0x34);
+    ok &= expect_int("state cpu pc", nes.cpu.pc, 0x8123);
+    ok &= expect_int("state ram", nes.ram[0x20], 0x56);
+    ok &= expect_int("state prg ram", nes_cpu_read(&nes, 0x6000), 0x78);
+    ok &= expect_int("state chr ram", nes_ppu_read(&nes, 0x0004), 0x9A);
+    ok &= expect_int("state ppu ctrl", nes.ppu.ctrl, 0x80);
+    ok &= expect_int("state ppu v", nes.ppu.v, 0x2345);
+    ok &= expect_int("state apu status", nes.apu.status, 0x1F);
+    ok &= expect_int("state joypad state", nes.joypad.state, 0xA5);
+    ok &= expect_int("state joypad shift", nes.joypad.shift, 0x5A);
+    ok &= expect_int("state joypad strobe", nes.joypad.strobe, 1);
+
+    nes_init(&other);
+    load_result = nes_load_rom_image(&other, other_rom, sizeof(other_rom));
+    ok &= expect_int("load mismatched state rom", load_result, NES_RESULT_OK);
+    state_result = nes_state_load(&other, state_data, written);
+    ok &= expect_int("state rom mismatch", state_result, NES_STATE_ROM_MISMATCH);
+    nes_shutdown(&other);
+
+    free(state_data);
+    nes_shutdown(&nes);
+    return ok;
+}
+
 static int test_mapper4_bank_switch_and_irq(void)
 {
     uint8_t rom[TEST_MAPPER4_ROM_SIZE];
@@ -2504,6 +2607,7 @@ int main(int argc, char **argv)
 
     ok &= test_mapper0_load_and_map();
     ok &= test_mapper3_chr_bank_switch();
+    ok &= test_state_save_load_roundtrip_and_rom_mismatch();
     ok &= test_mapper4_bank_switch_and_irq();
     ok &= test_mapper4_irq_requires_a12_rise();
     ok &= test_mapper76_namcot3446_banks();

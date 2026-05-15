@@ -59,6 +59,26 @@ static void nes_mapper_clear(NesMapper *mapper)
     memset(mapper, 0, sizeof(*mapper));
 }
 
+static uint32_t nes_crc32(const uint8_t *data, size_t size)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    size_t i;
+
+    if (data == NULL) {
+        return 0;
+    }
+    for (i = 0; i < size; ++i) {
+        int bit;
+
+        crc ^= data[i];
+        for (bit = 0; bit < 8; ++bit) {
+            uint32_t mask = (uint32_t)-(int32_t)(crc & 1u);
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return ~crc;
+}
+
 void nes_update_irq(NesEmu *nes)
 {
     int mapper_irq;
@@ -1004,6 +1024,8 @@ NesResult nes_load_rom_image(NesEmu *nes, const uint8_t *data, size_t size)
     info.chr_banks = data[5];
     info.has_trainer = (uint8_t)((flags6 & 0x04u) != 0);
     info.has_battery_ram = (uint8_t)((flags6 & 0x02u) != 0);
+    memcpy(info.ines_header, data, sizeof(info.ines_header));
+    info.rom_crc32 = nes_crc32(data, size);
     if ((flags6 & 0x08u) != 0) {
         info.mirroring = NES_MIRROR_FOUR_SCREEN;
     } else {

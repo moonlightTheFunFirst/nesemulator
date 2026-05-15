@@ -3,6 +3,7 @@
 #endif
 
 #include <windows.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <mmsystem.h>
 #include <stdint.h>
@@ -16,6 +17,8 @@
 #define WINDOW_TITLE      L"NESEMU"
 #define ID_VIEW_2X_DISPLAY 1001
 #define ID_VIEW_OVERSCAN_CROP 1002
+#define ID_DATA_SAVE_STATE 1101
+#define ID_DATA_LOAD_STATE 1102
 #define AUDIO_BUFFERS     4u
 #define AUDIO_SAMPLES     512u
 #define NES_FRAME_RATE_NTSC 60.0988138974405
@@ -247,9 +250,13 @@ static void app_reset_clock(void)
 static HMENU app_create_menu(void)
 {
     HMENU menu = CreateMenu();
+    HMENU data_menu = CreatePopupMenu();
     HMENU view_menu = CreatePopupMenu();
 
-    if (menu == NULL || view_menu == NULL) {
+    if (menu == NULL || data_menu == NULL || view_menu == NULL) {
+        if (data_menu != NULL) {
+            DestroyMenu(data_menu);
+        }
         if (view_menu != NULL) {
             DestroyMenu(view_menu);
         }
@@ -259,6 +266,9 @@ static HMENU app_create_menu(void)
         return NULL;
     }
 
+    AppendMenuW(data_menu, MF_STRING, ID_DATA_SAVE_STATE, L"Save State\tG");
+    AppendMenuW(data_menu, MF_STRING, ID_DATA_LOAD_STATE, L"Load State...");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)data_menu, L"Data");
     AppendMenuW(view_menu, MF_STRING, ID_VIEW_2X_DISPLAY, L"2x Display");
     AppendMenuW(view_menu, MF_STRING, ID_VIEW_OVERSCAN_CROP, L"Overscan Crop");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)view_menu, L"View");
@@ -272,6 +282,12 @@ static void app_update_menu(HWND hwnd)
     if (menu == NULL) {
         return;
     }
+    EnableMenuItem(menu,
+                   ID_DATA_SAVE_STATE,
+                   MF_BYCOMMAND | (g_app.nes.rom_loaded ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(menu,
+                   ID_DATA_LOAD_STATE,
+                   MF_BYCOMMAND | (g_app.nes.rom_loaded ? MF_ENABLED : MF_GRAYED));
     CheckMenuItem(menu,
                   ID_VIEW_2X_DISPLAY,
                   MF_BYCOMMAND | (g_app.display_2x ? MF_CHECKED : MF_UNCHECKED));
@@ -490,6 +506,252 @@ static int read_entire_file_w(const WCHAR *path, uint8_t **out_data, size_t *out
     return 1;
 }
 
+static int write_entire_file_w(const WCHAR *path, const uint8_t *data, size_t size)
+{
+    HANDLE file;
+    size_t offset = 0;
+
+    if (path == NULL || data == NULL) {
+        return 0;
+    }
+
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    while (offset < size) {
+        DWORD chunk = (DWORD)((size - offset) > 0x40000000u ? 0x40000000u : (size - offset));
+        DWORD written = 0;
+
+        if (!WriteFile(file, data + offset, chunk, &written, NULL) || written != chunk) {
+            CloseHandle(file);
+            return 0;
+        }
+        offset += written;
+    }
+    CloseHandle(file);
+    return 1;
+}
+
+static const WCHAR *path_file_name(const WCHAR *path)
+{
+    const WCHAR *slash1;
+    const WCHAR *slash2;
+    const WCHAR *slash;
+
+    if (path == NULL) {
+        return L"";
+    }
+    slash1 = wcsrchr(path, L'\\');
+    slash2 = wcsrchr(path, L'/');
+    slash = slash1;
+    if (slash2 != NULL && (slash == NULL || slash2 > slash)) {
+        slash = slash2;
+    }
+    return slash != NULL ? slash + 1 : path;
+}
+
+static int state_default_path(WCHAR *path, size_t count)
+{
+    SYSTEMTIME time;
+    const WCHAR *file_name;
+    const WCHAR *dot;
+    WCHAR suffix[32];
+    size_t dir_len;
+    size_t stem_len;
+    size_t suffix_len;
+
+    if (path == NULL || count == 0 || g_app.rom_path[0] == L'\0') {
+        return 0;
+    }
+
+    file_name = path_file_name(g_app.rom_path);
+    dir_len = (size_t)(file_name - g_app.rom_path);
+    dot = wcsrchr(file_name, L'.');
+    stem_len = dot != NULL ? (size_t)(dot - file_name) : wcslen(file_name);
+    if (stem_len == 0) {
+        return 0;
+    }
+
+    GetLocalTime(&time);
+    swprintf(suffix,
+             sizeof(suffix) / sizeof(suffix[0]),
+             L"_%04u%02u%02u%02u%02u%02u.bin",
+             (unsigned int)time.wYear,
+             (unsigned int)time.wMonth,
+             (unsigned int)time.wDay,
+             (unsigned int)time.wHour,
+             (unsigned int)time.wMinute,
+             (unsigned int)time.wSecond);
+    suffix_len = wcslen(suffix);
+
+    if (dir_len + stem_len + suffix_len + 1u > count) {
+        return 0;
+    }
+    if (dir_len != 0) {
+        wmemcpy(path, g_app.rom_path, dir_len);
+    }
+    wmemcpy(path + dir_len, file_name, stem_len);
+    wcscpy(path + dir_len + stem_len, suffix);
+    return 1;
+}
+
+static void state_initial_dir(WCHAR *path, size_t count)
+{
+    const WCHAR *file_name;
+    size_t dir_len;
+
+    if (path == NULL || count == 0) {
+        return;
+    }
+    path[0] = L'\0';
+    if (g_app.rom_path[0] == L'\0') {
+        return;
+    }
+    file_name = path_file_name(g_app.rom_path);
+    dir_len = (size_t)(file_name - g_app.rom_path);
+    if (dir_len == 0 || dir_len >= count) {
+        return;
+    }
+    wmemcpy(path, g_app.rom_path, dir_len);
+    path[dir_len] = L'\0';
+}
+
+static void show_state_error(HWND hwnd, const WCHAR *operation, NesStateResult result)
+{
+    WCHAR reason[128];
+    WCHAR message[320];
+
+    if (result == NES_STATE_ROM_MISMATCH) {
+        wcscpy(message, L"このステートファイルは現在読み込まれているROMと一致しません。");
+    } else {
+        app_ascii_to_wide(reason,
+                          sizeof(reason) / sizeof(reason[0]),
+                          nes_state_result_string(result));
+        swprintf(message,
+                 sizeof(message) / sizeof(message[0]),
+                 L"State %ls failed: %ls.",
+                 operation,
+                 reason);
+    }
+    app_set_status(message);
+    MessageBoxW(hwnd, message, L"NESEMU State", MB_OK | MB_ICONERROR);
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+static void save_state(HWND hwnd)
+{
+    WCHAR path[MAX_PATH];
+    uint8_t *data = NULL;
+    size_t size = 0;
+    size_t written = 0;
+    NesStateResult result;
+
+    if (!g_app.nes.rom_loaded) {
+        show_state_error(hwnd, L"save", NES_STATE_NO_ROM);
+        return;
+    }
+    if (!state_default_path(path, sizeof(path) / sizeof(path[0]))) {
+        app_set_status(L"State save failed: could not build the save path.");
+        MessageBoxW(hwnd, g_app.status, L"NESEMU State", MB_OK | MB_ICONERROR);
+        InvalidateRect(hwnd, NULL, TRUE);
+        return;
+    }
+
+    result = nes_state_save_size(&g_app.nes, &size);
+    if (result != NES_STATE_OK) {
+        show_state_error(hwnd, L"save", result);
+        return;
+    }
+    data = (uint8_t *)malloc(size);
+    if (data == NULL) {
+        app_set_status(L"State save failed: out of memory.");
+        MessageBoxW(hwnd, g_app.status, L"NESEMU State", MB_OK | MB_ICONERROR);
+        InvalidateRect(hwnd, NULL, TRUE);
+        return;
+    }
+
+    result = nes_state_save(&g_app.nes, data, size, &written);
+    if (result != NES_STATE_OK) {
+        free(data);
+        show_state_error(hwnd, L"save", result);
+        return;
+    }
+    if (!write_entire_file_w(path, data, written)) {
+        free(data);
+        app_set_status(L"State save failed: file could not be written.");
+        MessageBoxW(hwnd, g_app.status, L"NESEMU State", MB_OK | MB_ICONERROR);
+        InvalidateRect(hwnd, NULL, TRUE);
+        return;
+    }
+    free(data);
+
+    swprintf(g_app.status,
+             sizeof(g_app.status) / sizeof(g_app.status[0]),
+             L"State saved: %ls",
+             path_file_name(path));
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+static void load_state_file(HWND hwnd, const WCHAR *path)
+{
+    uint8_t *data;
+    size_t size;
+    NesStateResult result;
+
+    if (!g_app.nes.rom_loaded) {
+        show_state_error(hwnd, L"load", NES_STATE_NO_ROM);
+        return;
+    }
+    if (!read_entire_file_w(path, &data, &size)) {
+        app_set_status(L"State load failed: file could not be read.");
+        MessageBoxW(hwnd, g_app.status, L"NESEMU State", MB_OK | MB_ICONERROR);
+        InvalidateRect(hwnd, NULL, TRUE);
+        return;
+    }
+
+    result = nes_state_load(&g_app.nes, data, size);
+    free(data);
+    if (result != NES_STATE_OK) {
+        show_state_error(hwnd, L"load", result);
+        return;
+    }
+
+    audio_start();
+    app_reset_clock();
+    app_reset_fps(hwnd);
+    swprintf(g_app.status,
+             sizeof(g_app.status) / sizeof(g_app.status[0]),
+             L"State loaded: %ls",
+             path_file_name(path));
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+static void load_state_dialog(HWND hwnd)
+{
+    OPENFILENAMEW ofn;
+    WCHAR path[MAX_PATH];
+    WCHAR initial_dir[MAX_PATH];
+
+    path[0] = L'\0';
+    state_initial_dir(initial_dir, sizeof(initial_dir) / sizeof(initial_dir[0]));
+
+    memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFilter = L"State Files (*.bin)\0*.bin\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = sizeof(path) / sizeof(path[0]);
+    ofn.lpstrInitialDir = initial_dir[0] != L'\0' ? initial_dir : NULL;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (GetOpenFileNameW(&ofn)) {
+        load_state_file(hwnd, path);
+    }
+}
+
 static void load_rom(HWND hwnd, const WCHAR *path)
 {
     uint8_t *data;
@@ -515,6 +777,7 @@ static void load_rom(HWND hwnd, const WCHAR *path)
     wcsncpy(g_app.rom_path, path, (sizeof(g_app.rom_path) / sizeof(g_app.rom_path[0])) - 1u);
     g_app.rom_path[(sizeof(g_app.rom_path) / sizeof(g_app.rom_path[0])) - 1u] = L'\0';
     format_loaded_status(path);
+    app_update_menu(hwnd);
     audio_start();
     app_reset_clock();
     app_reset_fps(hwnd);
@@ -709,6 +972,11 @@ static void set_key_state(HWND hwnd, WPARAM key, int pressed, LPARAM lparam)
             }
         }
         break;
+    case 'G':
+        if (pressed && first_press) {
+            save_state(hwnd);
+        }
+        break;
     default:
         return;
     }
@@ -819,7 +1087,7 @@ static void paint_window(HWND hwnd)
 
         swprintf(text,
                  sizeof(text) / sizeof(text[0]),
-                 L"NESEMU\n\n%ls\n\nDrop a .nes ROM file onto this window.\nKeys: WASD/Arrows move, Z/Space A, X/Shift B, C/Enter START, V/Backspace SELECT, B reset.\nPressed: %ls",
+                 L"NESEMU\n\n%ls\n\nDrop a .nes ROM file onto this window.\nKeys: WASD/Arrows move, Z/Space A, X/Shift B, C/Enter START, V/Backspace SELECT, B reset, G save state.\nPressed: %ls",
                  g_app.status[0] != L'\0' ? g_app.status : L"No ROM loaded.",
                  buttons);
 
@@ -867,6 +1135,12 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
+        case ID_DATA_SAVE_STATE:
+            save_state(hwnd);
+            return 0;
+        case ID_DATA_LOAD_STATE:
+            load_state_dialog(hwnd);
+            return 0;
         case ID_VIEW_2X_DISPLAY:
             app_set_2x_display(hwnd, !g_app.display_2x);
             return 0;
